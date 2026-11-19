@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Expenses</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cpath d='M9 22h4v-6H9zm5 0h4V10h-4zm5 0h4v-9h-4z' fill='white'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">Expenses</div>
+  <nav id="tabs" aria-label="Sections">
+    <button data-tab="dashboard" class="active">Dashboard</button>
+    <button data-tab="transactions">Transactions</button>
+    <button data-tab="review">Review <span id="review-badge" class="badge" hidden></span></button>
+    <button data-tab="import">Import</button>
+    <button data-tab="rules">Rules</button>
+    <button data-tab="categories">Categories</button>
+    <button data-tab="settings">Settings</button>
+  </nav>
+</header>
+
+<main>
+  <!-- Dashboard -->
+  <section id="tab-dashboard" class="tab active">
+    <div class="toolbar">
+      <select id="dash-month" aria-label="Month"></select>
+      <select id="dash-account" aria-label="Account"><option value="">All accounts</option></select>
+    </div>
+    <div id="dash-empty" class="empty" hidden>
+      <p>No transactions yet.</p>
+      <p><button class="primary" data-goto="settings">Add your accounts</button> then <button class="secondary" data-goto="import">import a statement</button></p>
+    </div>
+    <div id="dash-body">
+      <div class="tiles">
+        <div class="tile hero"><div class="tile-label">Spent</div><div class="tile-value" id="t-spent"></div><div class="tile-sub" id="t-spent-sub"></div></div>
+        <div class="tile"><div class="tile-label">Income</div><div class="tile-value" id="t-income"></div></div>
+        <div class="tile"><div class="tile-label">Net</div><div class="tile-value" id="t-net"></div></div>
+        <div class="tile"><div class="tile-label">Transfers & investments</div><div class="tile-value" id="t-transfers"></div><div class="tile-sub">Not counted as spending</div></div>
+      </div>
+      <div class="grid2">
+        <div class="card"><h2>Spending by category</h2><div id="chart-categories" class="hbars"></div></div>
+        <div class="card"><h2>Top merchants</h2><div id="chart-merchants" class="hbars"></div></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Last 12 months</h2>
+          <div class="legend"><span class="key s1"></span>Spent<span class="key s2"></span>Income</div></div>
+        <div id="chart-trend" class="trend"></div>
+      </div>
+      <p class="footnote" id="dash-foot"></p>
+    </div>
+  </section>
+
+  <!-- Transactions -->
+  <section id="tab-transactions" class="tab">
+    <div class="toolbar wrap">
+      <input id="f-q" type="search" placeholder="Search payee, narration, note" aria-label="Search">
+      <select id="f-month" aria-label="Month"><option value="">All months</option></select>
+      <select id="f-account" aria-label="Account"><option value="">All accounts</option></select>
+      <select id="f-category" aria-label="Category"><option value="">All categories</option></select>
+      <select id="f-source" aria-label="Categorized by">
+        <option value="">Categorized by anything</option>
+        <option value="rule">Your rules</option>
+        <option value="manual">You, one-off</option>
+        <option value="llm">Claude</option>
+        <option value="seed">Built-in rules</option>
+        <option value="transfer">Transfer detection</option>
+        <option value="fallback">Uncategorized</option>
+      </select>
+      <label class="check"><input id="f-review" type="checkbox"> Needs review</label>
+    </div>
+    <div class="summary" id="txn-summary"></div>
+    <div class="table-wrap">
+      <table class="txns">
+        <thead><tr><th>Date</th><th>Payee</th><th class="num">Amount</th><th>Category</th><th>Categorized by</th></tr></thead>
+        <tbody id="txn-body"></tbody>
+      </table>
+    </div>
+    <button id="txn-more" class="secondary block" hidden>Load more</button>
+  </section>
+
+  <!-- Review -->
+  <section id="tab-review" class="tab">
+    <p class="lead">Claude's low-confidence picks and anything still uncategorized. Fix a category to teach it, or accept Claude's pick: that turns it into your own rule for the payee.</p>
+    <div class="toolbar wrap">
+      <label class="check"><input type="checkbox" id="rv-all"> Select all</label>
+      <button id="rv-accept" class="primary" disabled>Accept selected</button>
+      <button id="rv-retry" class="secondary">Ask Claude again for uncategorized</button>
+    </div>
+    <div class="table-wrap">
+      <table class="txns">
+        <thead><tr><th class="cb"></th><th>Date</th><th>Payee</th><th class="num">Amount</th><th>Category</th><th>Categorized by</th></tr></thead>
+        <tbody id="rv-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Import -->
+  <section id="tab-import" class="tab">
+    <div class="card">
+      <h2>Import statements</h2>
+      <div class="form-row">
+        <label>Account
+          <select id="imp-account"><option value="">Detect from the statement</option></select>
+        </label>
+      </div>
+      <label id="dropzone" class="dropzone">
+        <input id="imp-file" type="file" multiple accept=".xls,.xlsx,.xlsm,.csv,.txt,.pdf">
+        <strong>Drop statements here or click to choose</strong>
+        <span>Excel (.xls, .xlsx), CSV or PDF from HDFC, City Union Bank and most other banks</span>
+      </label>
+      <div id="imp-results" class="results"></div>
+    </div>
+    <div class="card">
+      <h2>Imported statements</h2>
+      <div class="table-wrap">
+        <table class="plain">
+          <thead><tr><th>File</th><th>Account</th><th>Period</th><th class="num">Rows</th><th class="num">New</th><th>Source</th><th></th></tr></thead>
+          <tbody id="stmt-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- Rules -->
+  <section id="tab-rules" class="tab">
+    <div class="card">
+      <h2>Add a rule</h2>
+      <form id="rule-form" class="form-row wrap">
+        <label>If the narration
+          <select id="rf-type"><option value="contains">contains</option><option value="regex">matches regex</option></select>
+        </label>
+        <input id="rf-pattern" placeholder="e.g. ZOMATO" required aria-label="Pattern">
+        <label>on
+          <select id="rf-dir"><option value="any">debits and credits</option><option value="debit">debits</option><option value="credit">credits</option></select>
+        </label>
+        <label>use <select id="rf-cat"></select></label>
+        <button class="primary">Add rule</button>
+      </form>
+      <p class="hint">Your rules and corrections always win over Claude and the built-in list. Correcting a transaction's category creates a rule for that payee automatically.</p>
+    </div>
+    <div class="toolbar wrap">
+      <div class="seg" id="rules-source" role="tablist">
+        <button data-source="user" class="active">Yours</button>
+        <button data-source="llm">Claude's</button>
+        <button data-source="seed">Built-in</button>
+      </div>
+      <input id="rules-q" type="search" placeholder="Filter patterns" aria-label="Filter patterns">
+    </div>
+    <div class="table-wrap">
+      <table class="plain">
+        <thead><tr><th>Pattern</th><th>Match</th><th>Applies to</th><th>Category</th><th class="num">Transactions</th><th></th></tr></thead>
+        <tbody id="rules-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Categories -->
+  <section id="tab-categories" class="tab">
+    <div class="card">
+      <h2>Add a category</h2>
+      <form id="cat-form" class="form-row wrap">
+        <input id="cf-name" placeholder="Name" required aria-label="Name">
+        <select id="cf-kind" aria-label="Kind"><option value="expense">Expense</option><option value="income">Income</option><option value="transfer">Transfer (not counted)</option></select>
+        <input id="cf-desc" class="grow" placeholder="Description: helps Claude pick it" aria-label="Description">
+        <button class="primary">Add</button>
+      </form>
+    </div>
+    <div class="table-wrap">
+      <table class="plain">
+        <thead><tr><th>Name</th><th>Kind</th><th>Description</th><th class="num">Transactions</th><th>Shown</th><th>Merge into</th></tr></thead>
+        <tbody id="cat-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Settings -->
+  <section id="tab-settings" class="tab">
+    <div class="card">
+      <h2>Accounts</h2>
+      <div class="table-wrap">
+        <table class="plain">
+          <thead><tr><th>Name</th><th>Bank</th><th>Type</th><th>Last 4</th><th>Your name on it</th><th>Gmail search</th><th>PDF password</th><th class="num">Txns</th><th></th></tr></thead>
+          <tbody id="acct-body"></tbody>
+        </table>
+      </div>
+      <h3>Add an account</h3>
+      <form id="acct-form" class="form-row wrap">
+        <input id="af-name" placeholder="Name, e.g. HDFC Savings" required aria-label="Account name">
+        <select id="af-bank" aria-label="Bank"><option value="HDFC">HDFC Bank</option><option value="CUB">City Union Bank</option><option value="OTHER">Other bank</option></select>
+        <select id="af-type" aria-label="Type"><option value="savings">Savings</option><option value="current">Current</option><option value="credit_card">Credit card</option></select>
+        <input id="af-last4" placeholder="Last 4 digits" maxlength="4" inputmode="numeric" aria-label="Last 4 digits">
+        <input id="af-holder" placeholder="Your name as on the account" aria-label="Holder name">
+        <button class="primary">Add account</button>
+      </form>
+      <p class="hint">The last 4 digits let imports pick the account automatically. Your name lets the app recognise transfers to your own accounts.</p>
+    </div>
+    <div class="card">
+      <h2>Gmail</h2>
+      <div id="gmail-status" class="status-line"></div>
+      <div class="toolbar wrap">
+        <button id="gm-connect" class="secondary">Connect Gmail</button>
+        <button id="gm-sync" class="primary">Fetch statements now</button>
+        <button id="gm-disconnect" class="ghost">Disconnect</button>
+      </div>
+      <div id="gm-result" class="results"></div>
+      <p class="hint">Read-only access. Statements found by each account's Gmail search are downloaded and imported, using the PDF password saved for that account. Setup steps are in the README.</p>
+    </div>
+    <div class="card">
+      <h2>Claude usage</h2>
+      <div id="llm-usage"></div>
+    </div>
+  </section>
+</main>
+
+<dialog id="dlg-category">
+  <form method="dialog">
+    <h2>Change category</h2>
+    <p id="dc-text"></p>
+    <div class="dialog-actions stacked">
+      <button value="merchant" class="primary" id="dc-merchant"></button>
+      <button value="single" class="secondary">Only this transaction</button>
+      <button value="cancel" class="ghost">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-txn">
+  <form method="dialog" id="dt-form">
+    <h2 id="dt-title"></h2>
+    <dl id="dt-details" class="details"></dl>
+    <label class="block">Note <textarea id="dt-note" rows="2"></textarea></label>
+    <div class="dialog-actions">
+      <button value="similar" class="ghost" id="dt-similar">Show all from this payee</button>
+      <button value="cancel" class="ghost">Close</button>
+      <button value="save" class="primary">Save note</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-password">
+  <form method="dialog">
+    <h2>PDF password</h2>
+    <p id="dp-text" class="hint"></p>
+    <label class="block">Password <input id="dp-input" type="password" autocomplete="off"></label>
+    <div class="dialog-actions">
+      <button value="clear" class="ghost">Forget saved password</button>
+      <button value="cancel" class="ghost">Cancel</button>
+      <button value="save" class="primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

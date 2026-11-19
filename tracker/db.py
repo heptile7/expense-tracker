@@ -1,0 +1,194 @@
+"""SQLite schema, connection handling and seeding. Amounts are integer paise."""
+
+import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+
+import config
+
+SCHEMA_VERSION = 1
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS accounts (
+    id           INTEGER PRIMARY KEY,
+    name         TEXT NOT NULL UNIQUE,
+    bank         TEXT NOT NULL,                       -- HDFC | CUB | OTHER
+    type         TEXT NOT NULL DEFAULT 'savings',     -- savings | current | credit_card
+    last4        TEXT,
+    holder_name  TEXT,                                -- used to spot transfers to yourself
+    gmail_query  TEXT,
+    created_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS categories (
+    id           INTEGER PRIMARY KEY,
+    name         TEXT NOT NULL UNIQUE,
+    kind         TEXT NOT NULL CHECK (kind IN ('expense', 'income', 'transfer')),
+    color        TEXT,
+    description  TEXT,
+    is_active    INTEGER NOT NULL DEFAULT 1,
+    is_system    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS statements (
+    id           INTEGER PRIMARY KEY,
+    account_id   INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    source       TEXT NOT NULL DEFAULT 'upload',      -- upload | gmail
+    filename     TEXT,
+    file_sha256  TEXT UNIQUE,
+    period_start TEXT,
+    period_end   TEXT,
+    n_rows       INTEGER,
+    n_new        INTEGER,
+    imported_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS merchant_rules (
+    id           INTEGER PRIMARY KEY,
+    match_type   TEXT NOT NULL CHECK (match_type IN ('exact', 'contains', 'regex')),
+    pattern      TEXT NOT NULL,
+    direction    TEXT NOT NULL DEFAULT 'any' CHECK (direction IN ('debit', 'credit', 'any')),
+    category_id  INTEGER NOT NULL REFERENCES categories(id),
+    source       TEXT NOT NULL CHECK (source IN ('user', 'llm', 'seed')),
+    confidence   REAL,
+    hit_count    INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (match_type, pattern, direction)
+);
+
+CREATE TABLE IF NOT EXISTS transactions (
+    id              INTEGER PRIMARY KEY,
+    account_id      INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    statement_id    INTEGER REFERENCES statements(id) ON DELETE SET NULL,
+    txn_date        TEXT NOT NULL,                    -- ISO yyyy-mm-dd
+    narration_raw   TEXT NOT NULL,
+    channel         TEXT,
+    counterparty    TEXT,
+    vpa             TEXT,
+    merchant_key    TEXT NOT NULL,
+    amount_paise    INTEGER NOT NULL CHECK (amount_paise >= 0),
+    direction       TEXT NOT NULL CHECK (direction IN ('debit', 'credit')),
+    balance_paise   INTEGER,
+    ref_no          TEXT,
+    fingerprint     TEXT NOT NULL UNIQUE,
+    category_id     INTEGER REFERENCES categories(id),
+    category_source TEXT NOT NULL DEFAULT 'fallback'
+                    CHECK (category_source IN ('manual', 'rule', 'seed', 'llm', 'transfer', 'fallback')),
+    rule_id         INTEGER REFERENCES merchant_rules(id) ON DELETE SET NULL,
+    confidence      REAL,
+    needs_review    INTEGER NOT NULL DEFAULT 0,
+    linked_txn_id   INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
+    note            TEXT,
+    created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS ix_txn_merchant ON transactions(merchant_key);
+CREATE INDEX IF NOT EXISTS ix_txn_date ON transactions(txn_date);
+CREATE INDEX IF NOT EXISTS ix_txn_category ON transactions(category_id);
+CREATE INDEX IF NOT EXISTS ix_txn_account_date ON transactions(account_id, txn_date);
+CREATE INDEX IF NOT EXISTS ix_txn_rule ON transactions(rule_id);
+
+CREATE TABLE IF NOT EXISTS llm_calls (
+    id             INTEGER PRIMARY KEY,
+    ts             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    model          TEXT NOT NULL,
+    n_items        INTEGER NOT NULL,
+    input_tokens   INTEGER,
+    output_tokens  INTEGER,
+    cost_usd       REAL,
+    stop_reason    TEXT,
+    error          TEXT
+);
+
+CREATE TABLE IF NOT EXISTS fetched_messages (
+    message_id    TEXT PRIMARY KEY,
+    account_id    INTEGER REFERENCES accounts(id) ON DELETE CASCADE,
+    kind          TEXT NOT NULL,                      -- statement
+    status        TEXT NOT NULL,                      -- imported | duplicate | no_attachment | error
+    detail        TEXT,
+    processed_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+_db_path: Path = config.DB_PATH
+
+
+def set_db_path(path: str | Path) -> None:
+    """Point the app at a different database file (used by tests)."""
+    global _db_path
+    _db_path = Path(path)
+
+
+def get_db_path() -> Path:
+    return _db_path
+
+
+def connect() -> sqlite3.Connection:
+    _db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(_db_path, timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    return conn
+
+
+@contextmanager
+def session() -> Iterator[sqlite3.Connection]:
+    """Connection that commits on success and rolls back on error."""
+    conn = connect()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def init_db() -> None:
+    with session() as conn:
+        conn.executescript(SCHEMA)
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        _seed(conn)
+
+
+def _seed(conn: sqlite3.Connection) -> None:
+    """Insert default categories and seed rules once; never overwrite user edits."""
+    has_categories = conn.execute("SELECT COUNT(*) FROM categories").fetchone()[0]
+    if not has_categories:
+        conn.executemany(
+            "INSERT INTO categories (name, kind, color, description, is_system) VALUES (?, ?, ?, ?, ?)",
+            [(n, k, c, d, 1 if n == config.UNCATEGORIZED else 0) for n, k, c, d in config.DEFAULT_CATEGORIES],
+        )
+    has_seeds = conn.execute("SELECT COUNT(*) FROM merchant_rules WHERE source = 'seed'").fetchone()[0]
+    if not has_seeds:
+        ids = {r["name"]: r["id"] for r in conn.execute("SELECT id, name FROM categories")}
+        rows = []
+        for category, direction, keywords in config.SEED_RULES:
+            if category not in ids:
+                continue
+            for kw in keywords:
+                rows.append(("contains", kw.upper(), direction or "any", ids[category], "seed"))
+        conn.executemany(
+            "INSERT OR IGNORE INTO merchant_rules (match_type, pattern, direction, category_id, source) "
+            "VALUES (?, ?, ?, ?, ?)",
+            rows,
+        )
+
+
+def category_id_by_name(conn: sqlite3.Connection, name: str) -> int | None:
+    row = conn.execute("SELECT id FROM categories WHERE lower(name) = lower(?)", (name.strip(),)).fetchone()
+    return row["id"] if row else None
+
+
+def uncategorized_id(conn: sqlite3.Connection) -> int:
+    cid = category_id_by_name(conn, config.UNCATEGORIZED)
+    if cid is None:
+        cur = conn.execute(
+            "INSERT INTO categories (name, kind, color, is_system) VALUES (?, 'expense', '#ced4da', 1)",
+            (config.UNCATEGORIZED,),
+        )
+        cid = cur.lastrowid
+    return cid

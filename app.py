@@ -1,0 +1,298 @@
+"""Expense tracker web app (FastAPI). Run: python app.py  ->  http://127.0.0.1:8765"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(__file__))
+
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+
+import logging
+import re
+import uuid
+
+from fastapi import Body, FastAPI, File, Form, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+import config
+from tracker import db, service
+from tracker.fetch import gmail, secrets
+from tracker.importer import NeedsAccount
+from tracker.parsers import SUPPORTED, PasswordRequired, StatementError
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
+
+db.init_db()
+app = FastAPI(title="Expense Tracker", docs_url="/api/docs", redoc_url=None)
+app.mount("/static", StaticFiles(directory=config.BASE_DIR / "static"), name="static")
+templates = Jinja2Templates(directory=config.BASE_DIR / "templates")
+
+
+# ── Error mapping ─────────────────────────────────────────────────────────────
+
+
+@app.exception_handler(service.NotFound)
+async def _not_found(_: Request, exc: service.NotFound):
+    return JSONResponse({"error": str(exc)}, status_code=404)
+
+
+@app.exception_handler(ValueError)
+async def _bad_request(_: Request, exc: ValueError):
+    return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+# ── Page ──────────────────────────────────────────────────────────────────────
+
+
+@app.get("/", response_class=HTMLResponse)
+def index(request: Request):
+    return templates.TemplateResponse(request, "index.html", {"model": config.MODEL_ID})
+
+
+@app.get("/api/meta")
+def meta():
+    return {
+        "categories": service.list_categories(include_inactive=True),
+        "accounts": service.list_accounts(),
+        "months": service.available_months(),
+        "model": config.MODEL_ID,
+        "claude_key_set": bool(os.getenv("ANTHROPIC_API_KEY")),
+    }
+
+
+@app.get("/api/dashboard")
+def dashboard(month: str | None = None, account_id: int | None = None):
+    return service.dashboard(month, account_id)
+
+
+# ── Transactions ──────────────────────────────────────────────────────────────
+
+
+@app.get("/api/transactions")
+def transactions(
+    q: str | None = None, month: str | None = None, account_id: int | None = None, category_id: int | None = None,
+    source: str | None = None, direction: str | None = None, needs_review: bool = False, merchant_key: str | None = None,
+    sort: str = "date_desc", limit: int = 100, offset: int = 0,
+):
+    return service.list_transactions(
+        limit=min(limit, 1000), offset=offset, sort=sort, q=q, month=month, account_id=account_id,
+        category_id=category_id, source=source, direction=direction, needs_review=needs_review, merchant_key=merchant_key,
+    )
+
+
+@app.get("/api/transactions/{txn_id}")
+def transaction(txn_id: int):
+    return service.get_transaction(txn_id)
+
+
+@app.patch("/api/transactions/{txn_id}")
+def update_transaction(txn_id: int, body: dict = Body(...)):
+    out = {}
+    if "note" in body:
+        out["note"] = service.set_note(txn_id, body.get("note"))
+    if body.get("category_id") is not None:
+        out["category"] = service.set_category(txn_id, int(body["category_id"]), body.get("scope", "merchant"))
+    return out
+
+
+@app.post("/api/transactions/accept")
+def accept(body: dict = Body(...)):
+    return service.accept_categories([int(i) for i in body.get("ids", [])])
+
+
+@app.post("/api/recategorize")
+def recategorize(body: dict = Body(default={})):
+    return service.recategorize(body.get("scope", "uncategorized"))
+
+
+# ── Import ────────────────────────────────────────────────────────────────────
+
+
+@app.post("/api/import")
+def import_statement(
+    file: UploadFile = File(...),
+    account_id: int | None = Form(None),
+    password: str | None = Form(None),
+    remember_password: bool = Form(False),
+):
+    name = os.path.basename(file.filename or "statement")
+    if os.path.splitext(name)[1].lower() not in SUPPORTED:
+        return JSONResponse({"error": "Unsupported file type. Use .xls, .xlsx, .csv or .pdf"}, status_code=400)
+    upload_dir = config.INBOX_DIR / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    path = upload_dir / f"{uuid.uuid4().hex[:8]}_{re.sub(r'[^A-Za-z0-9._-]', '_', name)}"
+    path.write_bytes(file.file.read())
+
+    candidates: list[str | None] = [password] if password else []
+    if not password:
+        ids = [account_id] if account_id else [a["id"] for a in service.list_accounts()]
+        candidates += [p for p in (secrets.get_pdf_password(i) for i in ids) if p]
+        candidates.append(None)
+    keep = False
+    try:
+        last_exc: Exception | None = None
+        for pw in candidates:
+            try:
+                result = service.import_file(path, account_id, pw, name)
+                break
+            except PasswordRequired as exc:
+                last_exc = exc
+        else:
+            return JSONResponse(
+                {"error": str(last_exc), "needs_password": True, "wrong_password": bool(password)}, status_code=409
+            )
+        if password and remember_password and result.account_id:
+            secrets.set_pdf_password(result.account_id, password)
+        keep = not result.duplicate_file
+        return result.as_dict()
+    except NeedsAccount as exc:
+        return JSONResponse({"error": str(exc), "needs_account": True, "bank": exc.bank, "last4": exc.last4}, status_code=409)
+    except StatementError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+    finally:
+        if not keep:
+            path.unlink(missing_ok=True)
+
+
+@app.get("/api/statements")
+def statements():
+    return service.list_statements()
+
+
+@app.delete("/api/statements/{statement_id}")
+def delete_statement(statement_id: int):
+    return service.delete_statement(statement_id)
+
+
+# ── Rules ─────────────────────────────────────────────────────────────────────
+
+
+@app.get("/api/rules")
+def rules(source: str | None = None, q: str | None = None):
+    return service.list_rules(source, q)
+
+
+@app.post("/api/rules")
+def create_rule(body: dict = Body(...)):
+    return service.create_rule(
+        body.get("pattern", ""), int(body["category_id"]), body.get("match_type", "contains"), body.get("direction", "any")
+    )
+
+
+@app.patch("/api/rules/{rule_id}")
+def update_rule(rule_id: int, body: dict = Body(...)):
+    cat = body.get("category_id")
+    return service.update_rule(
+        rule_id, int(cat) if cat is not None else None, body.get("pattern"), body.get("match_type"), body.get("direction")
+    )
+
+
+@app.delete("/api/rules/{rule_id}")
+def delete_rule(rule_id: int):
+    return service.delete_rule(rule_id)
+
+
+# ── Categories ────────────────────────────────────────────────────────────────
+
+
+@app.get("/api/categories")
+def categories():
+    return service.list_categories(include_inactive=True)
+
+
+@app.post("/api/categories")
+def create_category(body: dict = Body(...)):
+    return service.create_category(body.get("name", ""), body.get("kind", "expense"), None, body.get("description"))
+
+
+@app.patch("/api/categories/{category_id}")
+def update_category(category_id: int, body: dict = Body(...)):
+    return service.update_category(category_id, **body)
+
+
+@app.post("/api/categories/{category_id}/merge")
+def merge_category(category_id: int, body: dict = Body(...)):
+    return service.merge_categories(category_id, int(body["target_id"]))
+
+
+# ── Accounts ──────────────────────────────────────────────────────────────────
+
+
+@app.get("/api/accounts")
+def accounts():
+    out = service.list_accounts()
+    for a in out:
+        a["has_pdf_password"] = secrets.has_pdf_password(a["id"])
+    return out
+
+
+@app.post("/api/accounts")
+def create_account(body: dict = Body(...)):
+    return service.create_account(**body)
+
+
+@app.patch("/api/accounts/{account_id}")
+def update_account(account_id: int, body: dict = Body(...)):
+    return service.update_account(account_id, **body)
+
+
+@app.delete("/api/accounts/{account_id}")
+def delete_account(account_id: int):
+    secrets.delete_pdf_password(account_id)
+    return service.delete_account(account_id)
+
+
+@app.put("/api/accounts/{account_id}/pdf-password")
+def set_pdf_password(account_id: int, body: dict = Body(...)):
+    pw = (body.get("password") or "").strip()
+    if not pw:
+        secrets.delete_pdf_password(account_id)
+        return {"saved": False}
+    secrets.set_pdf_password(account_id, pw)
+    return {"saved": True}
+
+
+# ── Gmail & Claude usage ─────────────────────────────────────────────────────
+
+
+@app.get("/api/gmail/status")
+def gmail_status():
+    return gmail.status()
+
+
+@app.post("/api/gmail/connect")
+def gmail_connect():
+    try:
+        return gmail.connect()
+    except FileNotFoundError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+@app.post("/api/gmail/disconnect")
+def gmail_disconnect():
+    gmail.disconnect()
+    return gmail.status()
+
+
+@app.post("/api/gmail/sync")
+def gmail_sync(body: dict = Body(default={})):
+    try:
+        return gmail.sync(body.get("account_id"))
+    except RuntimeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+@app.get("/api/llm/usage")
+def llm_usage():
+    return service.llm_usage()
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host=config.HOST, port=config.PORT)
