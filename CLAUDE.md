@@ -37,6 +37,7 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 | `tracker/local_classifier.py` | Offline naive Bayes on payee/UPI/remark words. |
 | `tracker/transfers.py` | Self-transfer and card-payment detection. Card purchases never pair; a card credit pairs with a bank debit within ±5 days only if it looks like a bill payment (`looks_like_card_payment`). |
 | `tracker/insights.py` | Dashboard statistics, recurring commitments, unusual payments, card bills (`card_bills`) and bill payments with no card statement (`card_bills_not_itemised`), plain-language facts. |
+| `tracker/flow.py` | "Where the money went": money in/out over a period reconciled to the bank balance change (internal transfers and itemised card bills left out), one-offs, what's not explained yet, likely mix-ups. `/api/where`, MCP `where_money_went`. |
 | `tracker/advisor.py` | Money plan: totals-only snapshot → Claude (Opus) or offline rules; budgets. |
 | `tracker/service.py` | Shared operations for UI and MCP (categories, accounts, rules, budgets, corrections, summaries). |
 | `tracker/fetch/netbanking.py` | Assisted net banking: Playwright drives the user's Edge; recorder JS + replay. Recorded steps are stored per `route_profile`: the bank (`HDFC`) or its cards (`HDFC:card`). |

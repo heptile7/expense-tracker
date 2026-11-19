@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 import config
-from tracker import advisor, db, insights, logs, service
+from tracker import advisor, db, flow, insights, logs, service
 from tracker.fetch import gmail, netbanking, secrets
 from tracker.importer import NeedsAccount
 from tracker.parsers import SUPPORTED, PasswordRequired, StatementError
@@ -117,6 +117,12 @@ def overview(period: str = "month", month: str | None = None, account_id: int | 
 # ── Money plan & budgets ─────────────────────────────────────────────────────
 
 
+@app.get("/api/where")
+def where(period: str = "month", month: str | None = None, account_id: int | None = None):
+    """Where the money went: all money in and out for the period, one-offs, and what isn't explained yet."""
+    return flow.where_it_went(period, month, account_id)
+
+
 @app.get("/api/plan")
 def get_plan():
     return advisor.latest_plan() or {}
@@ -150,11 +156,12 @@ def set_budget(category_id: int, body: dict = Body(...)):
 def transactions(
     q: str | None = None, month: str | None = None, account_id: int | None = None, category_id: int | None = None,
     source: str | None = None, direction: str | None = None, needs_review: bool = False, merchant_key: str | None = None,
-    sort: str = "date_desc", limit: int = 100, offset: int = 0,
+    start_date: str | None = None, end_date: str | None = None, sort: str = "date_desc", limit: int = 100, offset: int = 0,
 ):
     return service.list_transactions(
         limit=min(limit, 1000), offset=offset, sort=sort, q=q, month=month, account_id=account_id,
         category_id=category_id, source=source, direction=direction, needs_review=needs_review, merchant_key=merchant_key,
+        start_date=start_date, end_date=end_date,
     )
 
 

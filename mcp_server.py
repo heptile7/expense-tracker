@@ -28,7 +28,7 @@ from datetime import date
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
-from tracker import advisor, db, insights, logs, service
+from tracker import advisor, db, flow, insights, logs, service
 
 READ_ONLY = ToolAnnotations(read_only_hint=True)
 
@@ -178,6 +178,22 @@ def spending_overview(period: str = "month", month: str | None = None) -> dict:
     out["categories"] = [{k: c[k] for k in ("name", "group", "amount", "usual", "change_pct", "budget", "children")} for c in o["categories"]]
     out["recurring"] = [{k: r[k] for k in ("payee", "category", "monthly", "active")} for r in o["recurring"]]
     return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+def where_money_went(period: str = "3m", month: str | None = None) -> dict:
+    """Where the money went: every rupee in and out over the period, accounted for.
+
+    Returns money out by category (plus investments, card bills with no card statement, transfers to
+    untracked accounts), money in by source, the bank balance change it reconciles to, one-off payments
+    set apart from regular spending, and what isn't explained yet (payments to people, card bills,
+    Uncategorized/Other, likely mix-ups) with what to do about each.
+
+    Args:
+        period: "month", "3m" (3 months ending at `month`), "fy" (Indian financial year) or "12m".
+        month: "yyyy-mm"; defaults to the latest full month with data.
+    """
+    return flow.where_it_went(period, month)
 
 
 @mcp.tool(annotations=READ_ONLY)

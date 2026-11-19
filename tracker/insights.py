@@ -118,7 +118,8 @@ def resolve_period(kind: str = "month", month: str | None = None, conn: sqlite3.
 
 
 def _load(conn, start: date, end: date, account_id: int | None = None) -> list[dict]:
-    sql = """SELECT id, account_id, txn_date, amount_paise, direction, category_id, merchant_key, counterparty, channel
+    sql = """SELECT id, account_id, txn_date, amount_paise, direction, category_id, merchant_key, counterparty, channel,
+                    vpa, linked_txn_id, category_source, rule_id
              FROM transactions WHERE txn_date BETWEEN ? AND ?"""
     params: list = [start.isoformat(), end.isoformat()]
     if account_id:

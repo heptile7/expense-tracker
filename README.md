@@ -15,6 +15,7 @@ Everything runs on your own computer at `http://127.0.0.1:8765`. Your data lives
   - then an offline guesser when Claude isn't available.
 - **Learns from you.** Change a category and choose "all from this payee": every past transaction from that payee updates, and future ones follow. Or change just one transaction.
 - **Spots transfers** between your own accounts and credit-card bill payments, and leaves them out of spending.
+- **Where the money went**, at the top of the dashboard. All the money that went out in the period, ranked: each category, investments, card bills, and transfers to accounts the app doesn't track. Next to it, what came in, and the change in your bank balance it adds up to, so every rupee is accounted for. One-off payments (large, and not to someone you pay regularly) are set apart from regular spending. What the app can't explain yet is shown openly: card bills without a card statement, payments to people, Uncategorized and Other, and likely mix-ups such as a rent payment filed under Parking because its note said "parking". Each has a link to fix it.
 - **Dashboard:** spent, income, saved and invested (with rates); the needs / wants / saved split; each category against your usual; regular commitments (rent, EMIs, SIPs, subscriptions); top merchants; payments to people; unusually large payments; a 12-month trend. You can look at a month, 3 months, the financial year (April–March) or 12 months.
 - **Money plan:** Claude reads your monthly totals and suggests concrete actions with estimated monthly savings, budgets you can adopt in one click, and an emergency-fund target. There's an offline version too.
 - **Budgets** per category, with progress shown on the dashboard.
@@ -145,6 +146,7 @@ Add this to `%APPDATA%\Claude\claude_desktop_config.json` and restart Claude Des
 
 | Tool | What it does |
 |---|---|
+| `where_money_went` | Every rupee in and out for a period, one-off payments, and what isn't explained yet |
 | `spending_overview` | Savings rate, needs/wants, change vs usual, commitments, key facts |
 | `spending_summary` | Totals by category, merchant, month or account |
 | `search_transactions` | Find transactions by text, category, date or amount |

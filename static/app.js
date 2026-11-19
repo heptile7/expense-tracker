@@ -15,6 +15,8 @@ const fmtDate = (iso) => new Date(iso + "T00:00:00").toLocaleDateString("en-IN",
 const monthLabel = (m) => { const [y, mo] = m.split("-"); return new Date(+y, +mo - 1, 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" }); };
 const monthShort = (m) => { const [y, mo] = m.split("-"); return new Date(+y, +mo - 1, 1).toLocaleDateString("en-IN", { month: "short" }); };
 const plural = (n, word) => `${n.toLocaleString("en-IN")} ${word}${n === 1 ? "" : "s"}`;
+// ₹10.15 lakh for big totals, ₹23,300 below a lakh.
+const lakh = (v) => (Math.abs(v) >= 100000 ? `${v < 0 ? "−" : ""}₹${(Math.abs(v) / 100000).toFixed(2).replace(/\.?0+$/, "")} lakh` : money(v, true));
 
 async function api(method, url, body, isForm = false) {
   const opts = { method, headers: {} };
@@ -138,7 +140,7 @@ async function loadDashboard() {
   // Until you pick a month, let the server choose (the last full month, not one still in progress).
   if (state.dashMonthPicked && $("#dash-month").value) params.set("month", $("#dash-month").value);
   if ($("#dash-account").value) params.set("account_id", $("#dash-account").value);
-  const d = await api("GET", `/api/overview?${params}`);
+  const [d, w] = await Promise.all([api("GET", `/api/overview?${params}`), api("GET", `/api/where?${params}`)]);
   state.dash = d;
   $("#dash-empty").hidden = d.has_data;
   $("#dash-body").hidden = !d.has_data;
@@ -157,6 +159,7 @@ async function loadDashboard() {
     : `${pct(d.savings_rate)} of income`;
   $("#t-invested").textContent = money(d.invested, true);
   $("#t-invested-sub").textContent = d.invest_rate == null || d.invest_rate > 1 ? "Not counted as spending" : `${pct(d.invest_rate)} of income · not counted as spending`;
+  renderWhere(w);
   renderSplit(d);
   renderFacts(d.facts);
   renderCards(d.cards || []);
@@ -169,6 +172,95 @@ async function loadDashboard() {
   const chain = state.meta?.categorizer?.chain || [];
   $("#dash-foot").textContent = `Spending is net of refunds booked to the same category; transfers between your accounts and card bill payments aren't counted. ` +
     `New payees are categorized by: ${chain.join(" → ")}.${d.needs_review ? ` ${plural(d.needs_review, "transaction")} need a look in Review.` : ""}`;
+}
+
+// ── Where the money went ─────────────────────────────────────────────────────
+const WHERE_TOP = 10;
+
+function whereRange(w) {
+  return { start_date: w.period.start, end_date: w.period.end, range_label: w.period.label, account_id: $("#dash-account").value };
+}
+
+function categoryIdByName(name) {
+  return (state.meta?.categories || []).find((c) => c.name === name)?.id;
+}
+
+function whereOpen(w, row) {
+  if (row.kind === "card_bills") return showTab("import");
+  const id = row.kind === "category" ? row.category_id
+    : row.kind === "investments" ? categoryIdByName("Investments")
+    : row.kind === "own_accounts" ? categoryIdByName("Self Transfer") : categoryIdByName("Credit Card Payment");
+  openTxns({ ...whereRange(w), category_id: id, sort: "amount_desc" });
+}
+
+function renderWhere(w) {
+  const p = w.period, several = p.months > 1;
+  $("#where-period").textContent = p.label + (p.in_progress ? " so far" : "") +
+    (p.months_in_period > 1 && Math.round(p.months) < p.months_in_period ? ` · statements cover ${Math.round(p.months)} of the ${p.months_in_period} months` : "");
+  if (!w.money_out && !w.money_in) {
+    $("#where-lead").textContent = "Nothing came in or went out in this period.";
+    ["#where-rows", "#where-unknown", "#where-oneoffs", "#where-from"].forEach((s) => { $(s).innerHTML = ""; });
+    return;
+  }
+  const perMonth = (v) => (several && v != null ? ` (${lakh(v)} a month)` : "");
+  let lead = `<b>${lakh(w.money_out)}</b> went out${perMonth(w.out_per_month)} and <b>${lakh(w.money_in)}</b> came in.`;
+  if (w.balance) {
+    const ch = w.balance.change;
+    lead += ` Your bank balance went ${ch < 0 ? "down" : "up"} by <b>${money(Math.abs(ch), true)}</b>, from ${money(w.balance.opening, true)} to ${money(w.balance.closing, true)}`;
+    lead += w.check?.matches ? `: <span class="ok">every rupee is accounted for.</span>`
+      : `. ${money(Math.abs(w.check.gap), true)} of that isn't accounted for: usually card spending not paid off yet, or a gap between statements.`;
+  }
+  $("#where-lead").innerHTML = lead;
+
+  const max = Math.max(...w.rows.map((r) => r.amount), 1);
+  const rowHtml = (r, i) => {
+    const subs = [r.unexplained ? "not explained yet" : "", ...r.top_children.map((c) => `${c.name} ${money(c.amount, true)}`)]
+      .filter(Boolean).join(" · ");
+    const cls = r.unexplained ? "unknown" : r.kind === "investments" ? "savings" : "";
+    return `<div class="where-row ${cls}" data-i="${i}"${i >= WHERE_TOP ? " hidden" : ""}>
+      <button class="name" data-where="${i}" title="${esc(r.name)}"><span>${esc(r.name)}</span>
+        ${subs ? `<span class="sub">${esc(subs)}</span>` : ""}</button>
+      <div class="bar-cell"><div class="bar" style="width:${(r.amount / max) * 100}%"></div></div>
+      <div class="num">${money(r.amount, true)}</div>
+      <div class="num pm">${several && r.per_month != null ? money(r.per_month, true) : ""}</div>
+      <div class="share">${pct(r.share)}</div></div>`;
+  };
+  $("#where-rows").innerHTML = `<div class="where-row head"><span>Went to</span><span class="bar-cell"></span><span class="num">Total</span>` +
+    `<span class="num pm">${several ? "A month" : ""}</span><span class="share">Share</span></div>` + w.rows.map(rowHtml).join("") +
+    (w.rows.length > WHERE_TOP ? `<button class="link where-toggle" id="where-all">Show ${w.rows.length - WHERE_TOP} more</button>` : "");
+  $$("[data-where]", $("#where-rows")).forEach((b) => b.addEventListener("click", () => whereOpen(w, w.rows[+b.dataset.where])));
+  $("#where-all")?.addEventListener("click", (e) => {
+    $$(".where-row[hidden]", $("#where-rows")).forEach((r) => { r.hidden = false; });
+    e.target.remove();
+  });
+
+  // Not explained yet
+  const u = w.unexplained;
+  const fixButton = (it, i) => `<button class="link fix" data-fix="${i}">${esc(it.fix)} →</button>`;
+  $("#where-unknown").innerHTML = u.items.length
+    ? `<h3><span>Not explained yet</span><span class="hint">${money(u.amount, true)} · ${pct(u.share)} of what went out</span></h3>
+       <div class="where-meter" role="img" aria-label="${pct(u.share)} not explained"><i style="width:${Math.min(100, (u.share || 0) * 100)}%"></i></div>
+       <ul class="where-list">${u.items.map((it, i) => `<li><span>${esc(it.text)}</span><span class="amt">${money(it.amount, true)}</span>
+         ${it.items ? `<ul>${it.items.map((m) => `<li><span class="payee" data-open="${m.id}" tabindex="0">${esc(m.payee)}</span>
+           <span class="amt">${money(m.amount, true)}</span><span class="sub">${fmtDate(m.date)} · ${esc(m.category)}: ${esc(m.why)}. Click to change it.</span></li>`).join("")}</ul>`
+           : fixButton(it, i)}</li>`).join("")}</ul>`
+    : `<h3><span>Not explained yet</span><span class="hint">nothing</span></h3><p class="hint">Everything that went out has a category.</p>`;
+  $$("[data-fix]", $("#where-unknown")).forEach((b) => b.addEventListener("click", () => {
+    const it = u.items[+b.dataset.fix];
+    if (it.kind === "card_bills") showTab("import");
+    else openTxns({ ...whereRange(w), category_id: it.category_id, sort: "amount_desc" });
+  }));
+
+  // One-off payments
+  const regular = several && w.regular_per_month != null ? `${money(w.regular_per_month, true)} a month` : money(w.regular_out, true);
+  $("#where-oneoffs").innerHTML = w.one_offs.length
+    ? `<h3><span>One-off payments</span><span class="hint">${money(w.one_off_total, true)} · without them, ${regular} went out</span></h3>
+       <ul class="where-list">${w.one_offs.map((o) => `<li><span class="payee" data-open="${o.id}" tabindex="0">${esc(o.payee)}</span>
+         <span class="amt">${money(o.amount, true)}</span><span class="sub">${esc(o.category)} · ${fmtDate(o.date)} · ${esc(o.why)}</span></li>`).join("")}</ul>`
+    : `<h3><span>One-off payments</span><span class="hint">none</span></h3><p class="hint">No large payments outside your usual pattern (₹10,000 or more).</p>`;
+
+  $("#where-from").textContent = w.came_from.length
+    ? `Came in: ${w.came_from.map((c) => `${c.name} ${lakh(c.amount)}`).join(" · ")}.` : "";
 }
 
 function renderSplit(d) {
@@ -406,6 +498,8 @@ function txnParams() {
   if (v("#f-source")) p.set("source", v("#f-source"));
   if ($("#f-review").checked) p.set("needs_review", "true");
   if (state.txnMerchant) p.set("merchant_key", state.txnMerchant);
+  if (state.txnRange) { p.set("start_date", state.txnRange.start); p.set("end_date", state.txnRange.end); }
+  if (state.txnSort) p.set("sort", state.txnSort);
   return p;
 }
 
@@ -421,8 +515,10 @@ async function loadTxns(reset = true) {
   state.txnOffset += data.items.length;
   $("#txn-more").hidden = state.txnOffset >= data.total;
   const chip = state.txnMerchant ? ` · payee <span class="pill">${esc(state.txnMerchantLabel)} <button class="link" id="clear-merchant" aria-label="Clear payee filter">✕</button></span>` : "";
-  $("#txn-summary").innerHTML = `${plural(data.total, "transaction")}${chip}`;
+  const range = state.txnRange ? ` · <span class="pill">${esc(state.txnRange.label)}${state.txnSort === "amount_desc" ? ", largest first" : ""} <button class="link" id="clear-range" aria-label="Clear period filter">✕</button></span>` : "";
+  $("#txn-summary").innerHTML = `${plural(data.total, "transaction")}${chip}${range}`;
   $("#clear-merchant")?.addEventListener("click", () => { state.txnMerchant = null; loadTxns(true).catch(fail); });
+  $("#clear-range")?.addEventListener("click", () => { state.txnRange = null; state.txnSort = null; loadTxns(true).catch(fail); });
 }
 
 function openTxns(filters = {}) {
@@ -434,6 +530,8 @@ function openTxns(filters = {}) {
   $("#f-review").checked = !!filters.needs_review;
   state.txnMerchant = filters.merchant_key || null;
   state.txnMerchantLabel = filters.merchant_label || "";
+  state.txnRange = filters.start_date ? { start: filters.start_date, end: filters.end_date, label: filters.range_label || "" } : null;
+  state.txnSort = filters.sort || null;
   showTab("transactions");
 }
 

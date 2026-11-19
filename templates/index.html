@@ -40,6 +40,16 @@
       <p><button class="primary" data-goto="settings">Add your accounts</button> then <button class="secondary" data-goto="import">import a statement</button></p>
     </div>
     <div id="dash-body">
+      <div class="card" id="where-card">
+        <div class="card-head"><h2>Where the money went</h2><span class="hint" id="where-period"></span></div>
+        <p class="where-lead" id="where-lead"></p>
+        <div id="where-rows" class="where-rows"></div>
+        <div class="where-more">
+          <div id="where-unknown"></div>
+          <div id="where-oneoffs"></div>
+        </div>
+        <p class="footnote" id="where-from"></p>
+      </div>
       <div class="tiles">
         <div class="tile hero"><div class="tile-label">Spent</div><div class="tile-value" id="t-spent"></div><div class="tile-sub" id="t-spent-sub"></div></div>
         <div class="tile"><div class="tile-label">Income</div><div class="tile-value" id="t-income"></div><div class="tile-sub" id="t-income-sub"></div></div>
@@ -47,7 +57,7 @@
         <div class="tile"><div class="tile-label">Invested</div><div class="tile-value" id="t-invested"></div><div class="tile-sub" id="t-invested-sub"></div></div>
       </div>
       <div class="card">
-        <div class="card-head"><h2>Where your income went</h2><span class="hint">Reference point: 50% needs · 30% wants · 20% saved</span></div>
+        <div class="card-head"><h2>Needs, wants and savings</h2><span class="hint">Reference point: 50% needs · 30% wants · 20% saved</span></div>
         <div id="split-bar" class="segbar" role="img"></div>
         <div id="split-legend" class="legend split-legend"></div>
       </div>

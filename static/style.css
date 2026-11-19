@@ -254,6 +254,37 @@ td input { min-height: 30px; padding: 3px 8px; width: 100%; min-width: 80px; }
 .cat-row .meter i { display: block; height: 100%; background: var(--series-1); border-radius: 3px; }
 .cat-row .meter.over i { background: var(--critical); }
 .cat-row.child { font-size: 13px; }
+
+/* Where the money went */
+.where-lead { font-size: 15px; margin: 0 0 14px; max-width: 75ch; }
+.where-lead b { font-variant-numeric: tabular-nums; }
+.where-lead .ok { color: var(--good-text); }
+.where-row { display: grid; grid-template-columns: minmax(170px, 1.4fr) minmax(80px, 2fr) 100px 90px 52px; gap: 12px;
+  align-items: center; padding: 6px 8px; border-radius: 6px; }
+.where-row:hover { background: var(--hover); }
+.where-row.head { color: var(--muted); font-size: 12px; padding-top: 0; }
+.where-row.head:hover { background: none; }
+.where-row .name { border: 0; background: none; padding: 0; text-align: left; color: inherit; font: inherit; cursor: pointer; min-width: 0; }
+.where-row .name span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.where-row .name .sub { color: var(--muted); font-size: 12px; }
+.where-row .bar { height: 12px; background: var(--series-1); border-radius: 0 4px 4px 0; min-width: 2px; }
+.where-row.savings .bar { background: var(--series-3); }
+.where-row.unknown .bar { background: repeating-linear-gradient(135deg, var(--muted) 0 3px, transparent 3px 6px); border: 1px solid var(--muted); }
+.where-row .num { text-align: right; font-variant-numeric: tabular-nums; }
+.where-row .share { text-align: right; color: var(--text-2); font-size: 12px; font-variant-numeric: tabular-nums; }
+.where-toggle { margin: 4px 8px 0; }
+.where-more { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 8px; }
+.where-more h3 { display: flex; justify-content: space-between; gap: 8px; margin: 16px 0 8px; }
+.where-more h3 .hint { font-weight: 400; }
+.where-meter { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; margin: 0 0 10px; }
+.where-meter i { display: block; height: 100%; background: repeating-linear-gradient(135deg, var(--muted) 0 3px, transparent 3px 6px); }
+.where-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.where-list li { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; }
+.where-list .amt { font-variant-numeric: tabular-nums; font-weight: 500; text-align: right; }
+.where-list .sub { color: var(--muted); font-size: 12px; grid-column: 1 / -1; }
+.where-list .fix { grid-column: 1 / -1; justify-self: start; }
+.where-list ul { list-style: none; padding: 0; margin: 4px 0 0; grid-column: 1 / -1; display: grid; gap: 6px; }
+.where-list ul li { font-size: 13px; }
 .cat-row.child .name { padding-left: 24px; color: var(--text-2); }
 .cat-row.child .bar { height: 8px; opacity: 0.7; }
 
@@ -323,10 +354,13 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.35); }
   .tile.hero { grid-column: 1 / -1; }
   .grid2 { grid-template-columns: 1fr; }
   .grid2 .card { margin-bottom: 0; }
+  .where-more { grid-template-columns: 1fr; gap: 0; }
 }
 @media (max-width: 760px) {
   .cat-row { grid-template-columns: minmax(110px, 1fr) 90px 70px; }
   .cat-row .bar-cell, .cat-row .budget-cell { display: none; }
+  .where-row { grid-template-columns: minmax(110px, 1fr) 90px 44px; }
+  .where-row .bar-cell, .where-row .pm { display: none; }
 }
 @media (max-width: 600px) {
   .topbar { padding: 0 16px; gap: 12px; }
