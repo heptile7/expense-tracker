@@ -7,6 +7,9 @@ Conventions (all amounts in paise internally, rupees in output):
   * invested  = net money into the Investments category (counted separately, not as spending)
   * saved     = income - needs - wants, so it includes what you invested
 Transfers between your own accounts and card bill payments are left out entirely.
+Purchases on a credit card count once, from the card statement; paying the bill is a transfer.
+Bill payments with no imported card statement behind them are reported as "not itemised",
+because what was bought with the card is then missing from spending.
 """
 
 import calendar
@@ -115,7 +118,7 @@ def resolve_period(kind: str = "month", month: str | None = None, conn: sqlite3.
 
 
 def _load(conn, start: date, end: date, account_id: int | None = None) -> list[dict]:
-    sql = """SELECT id, txn_date, amount_paise, direction, category_id, merchant_key, counterparty, channel
+    sql = """SELECT id, account_id, txn_date, amount_paise, direction, category_id, merchant_key, counterparty, channel
              FROM transactions WHERE txn_date BETWEEN ? AND ?"""
     params: list = [start.isoformat(), end.isoformat()]
     if account_id:
@@ -198,6 +201,15 @@ def overview(kind: str = "month", month: str | None = None, account_id: int | No
         trend = monthly_trend(conn, tree, period.end.strftime("%Y-%m"), 12, account_id)
         months_available = [r[0] for r in conn.execute("SELECT DISTINCT substr(txn_date, 1, 7) FROM transactions ORDER BY 1 DESC")]
         review = conn.execute("SELECT COUNT(*) FROM transactions WHERE needs_review = 1").fetchone()[0]
+        card_accounts = {r[0] for r in conn.execute("SELECT id FROM accounts WHERE type = 'credit_card'")}
+        not_itemised = card_bills_not_itemised(conn, tree, period.start, period.elapsed_end, account_id)
+        cards = [c for c in card_bills(conn) if not account_id or c["account_id"] == account_id]
+    card_spent = 0
+    for t in txns:
+        if t["account_id"] in card_accounts:
+            bucket, _ = _classify(t, tree)
+            if bucket in ("needs", "wants"):
+                card_spent += _signed(t, bucket)
 
     income, needs, wants, invested = agg["income"], agg["needs"], agg["wants"], agg["savings"]
     spent = needs + wants
@@ -269,9 +281,107 @@ def overview(kind: str = "month", month: str | None = None, account_id: int | No
         "trend": trend,
         "baseline_months": base_months,
         "needs_review": review,
+        "card_spent": rupees(card_spent),
+        "card_bills_not_itemised": not_itemised,
+        "cards": cards,
     }
     out["facts"] = facts(out)
     return out
+
+
+# ── Credit cards ──────────────────────────────────────────────────────────────
+
+
+def _card_payment_ids(tree: dict) -> set[int]:
+    return {cid for cid, c in tree.items() if c["top_name"] == "Credit Card Payment"}
+
+
+def card_bills_not_itemised(conn, tree: dict, start: date, end: date, account_id: int | None = None) -> dict:
+    """Card bills paid from a bank account in [start, end] with no imported card statement behind them.
+
+    A payment counts as itemised when it was paired with the card's own record of it, or when its
+    date falls inside a card statement you imported (the purchases it pays for are then on record).
+    """
+    ids = _card_payment_ids(tree)
+    if not ids:
+        return {"amount": 0, "count": 0}
+    covered = [(r[0], r[1]) for r in conn.execute(
+        """SELECT period_start, date(period_end, '+5 days') FROM statements
+           WHERE kind = 'credit_card' AND period_start IS NOT NULL AND period_end IS NOT NULL""")]
+    sql = f"""SELECT t.txn_date, t.amount_paise FROM transactions t JOIN accounts a ON a.id = t.account_id
+              WHERE a.type != 'credit_card' AND t.direction = 'debit' AND t.linked_txn_id IS NULL
+                AND t.category_id IN ({','.join('?' * len(ids))}) AND t.txn_date BETWEEN ? AND ?"""
+    params: list = [*ids, start.isoformat(), end.isoformat()]
+    if account_id:
+        sql += " AND t.account_id = ?"
+        params.append(account_id)
+    rows = [r for r in conn.execute(sql, params) if not any(a <= r[0] <= b for a, b in covered)]
+    return {"amount": rupees(sum(r[1] for r in rows)), "count": len(rows)}
+
+
+def card_bills(conn, today: date | None = None) -> list[dict]:
+    """Each credit card's latest bill: amount due, due date, how much has been paid since, and the status."""
+    today = today or date.today()
+    pay_ids = _card_payment_ids(db.category_tree(conn))
+    cards = conn.execute("SELECT id, name, bank, last4 FROM accounts WHERE type = 'credit_card' ORDER BY name").fetchall()
+    out = []
+    for card in cards:
+        s = conn.execute(
+            """SELECT id, COALESCE(statement_date, period_end) AS stmt_date, period_start, period_end, due_date,
+                      total_due_paise, min_due_paise
+               FROM statements WHERE account_id = ? AND kind = 'credit_card'
+               ORDER BY COALESCE(statement_date, period_end) DESC, id DESC LIMIT 1""",
+            (card["id"],),
+        ).fetchone()
+        if not s:
+            out.append({"account_id": card["id"], "name": card["name"], "last4": card["last4"], "status": "no_statement"})
+            continue
+        paid = _paid_since(conn, card, s["stmt_date"], pay_ids, len(cards))
+        spent = conn.execute(
+            "SELECT COALESCE(SUM(amount_paise), 0) FROM transactions WHERE statement_id = ? AND direction = 'debit' "
+            "AND category_source != 'transfer'",
+            (s["id"],),
+        ).fetchone()[0]
+        total, minimum = s["total_due_paise"], s["min_due_paise"]
+        due = date.fromisoformat(s["due_date"]) if s["due_date"] else None
+        if total is None:
+            status = "unknown"
+        elif total <= 0 or paid >= total:
+            status = "paid"
+        elif due and due < today:
+            status = "part_paid" if minimum and paid >= minimum else "overdue"
+        else:
+            status = "due"
+        out.append({
+            "account_id": card["id"], "name": card["name"], "last4": card["last4"],
+            "statement_date": s["stmt_date"], "period_start": s["period_start"], "period_end": s["period_end"],
+            "due_date": s["due_date"], "days_left": (due - today).days if due else None,
+            "total_due": rupees(total), "min_due": rupees(minimum), "paid": rupees(paid),
+            "left_to_pay": rupees(max(total - paid, 0)) if total is not None else None,
+            "spent": rupees(spent), "status": status,
+        })
+    return out
+
+
+def _paid_since(conn, card, since: str, pay_ids: set[int], n_cards: int) -> int:
+    """Payments towards this card after its statement date: the card's own record of them, plus bank-side
+    bill payments the card hasn't shown yet (matched by the card's last 4 digits, or to your only card)."""
+    on_card = conn.execute(
+        "SELECT COALESCE(SUM(amount_paise), 0) FROM transactions WHERE account_id = ? AND direction = 'credit' "
+        "AND category_source = 'transfer' AND txn_date > ?",
+        (card["id"], since),
+    ).fetchone()[0]
+    if not pay_ids:
+        return on_card
+    rows = conn.execute(
+        f"""SELECT t.amount_paise, t.narration_raw FROM transactions t JOIN accounts a ON a.id = t.account_id
+            WHERE a.type != 'credit_card' AND t.direction = 'debit' AND t.linked_txn_id IS NULL AND t.txn_date > ?
+              AND t.category_id IN ({','.join('?' * len(pay_ids))})""",
+        (since, *pay_ids),
+    ).fetchall()
+    last4 = card["last4"]
+    from_bank = sum(r[0] for r in rows if (last4 and last4 in (r[1] or "")) or n_cards == 1)
+    return on_card + from_bank
 
 
 def _merchants(txns: list[dict], tree: dict) -> tuple[list[dict], list[dict]]:
@@ -492,6 +602,18 @@ def facts(o: dict) -> list[dict]:
     if o["people_total"] and o["spent"] and o["people_total"] / o["spent"] >= 0.1:
         out.append({"tone": "info", "text": f"{_inr(o['people_total'])} went to individuals by UPI/IMPS. Splitting these into what they were for "
                                             "(rent, household help, family) sharpens the picture."})
+    gap = o.get("card_bills_not_itemised") or {}
+    if gap.get("amount", 0) >= 500:
+        out.append({"tone": "warn", "text": f"{_inr(gap['amount'])} went to credit card bills{so_far} with no card statement "
+                                            "imported for them, so what you bought with the card isn't in these numbers. "
+                                            "Import your card statements to see it."})
+    if o.get("card_spent") and o["spent"] and o["card_spent"] > 0:
+        out.append({"tone": "info", "text": f"{_inr(o['card_spent'])} of your spending{so_far} was on credit cards "
+                                            f"({o['card_spent'] / o['spent']:.0%})."})
+    for c in o.get("cards") or []:
+        if c.get("status") in ("overdue", "part_paid"):
+            out.append({"tone": "warn", "text": f"{c['name']}: the bill of {_inr(c['total_due'])} was due on {c['due_date']} "
+                                                f"and {_inr(c['left_to_pay'])} is still unpaid as far as your statements show."})
     unc = next((c for c in o["categories"] if c["name"] == "Uncategorized"), None)
     if unc and unc["amount"] >= 1000:
         out.append({"tone": "info", "text": f"{_inr(unc['amount'])} is still uncategorized: see the Review tab."})

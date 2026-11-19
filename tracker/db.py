@@ -8,7 +8,9 @@ from pathlib import Path
 
 import config
 
-SCHEMA_VERSION = 3  # 2: 'local' category_source, app_settings; 3: sub-categories, groups, budgets, plans
+SCHEMA_VERSION = 4  # 2: 'local' category_source, app_settings; 3: sub-categories, groups, budgets, plans;
+                    # 4: credit card statements (bill box on statements)
+SEED_RULES_VERSION = "3"  # built-in keyword rules. 2: sub-categories; 3: "PAID VIA CRED" is a purchase, card fees
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
@@ -57,7 +59,12 @@ CREATE TABLE IF NOT EXISTS statements (
     period_end   TEXT,
     n_rows       INTEGER,
     n_new        INTEGER,
-    imported_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    imported_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    kind            TEXT NOT NULL DEFAULT 'bank',     -- bank | credit_card
+    statement_date  TEXT,                             -- credit cards: the bill box
+    due_date        TEXT,
+    total_due_paise INTEGER,
+    min_due_paise   INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS merchant_rules (
@@ -177,7 +184,18 @@ def init_db() -> None:
     with session() as conn:
         conn.executescript(SCHEMA)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-        _seed(conn)
+        reseeded = _seed(conn)
+        if reseeded:
+            _reapply_seed_rules(conn)
+
+
+def _reapply_seed_rules(conn: sqlite3.Connection) -> None:
+    """After the keyword rules change, re-run them on what they categorized before. No Claude calls."""
+    from tracker.categorizer import categorize  # categorizer imports this module
+
+    ids = [r[0] for r in conn.execute("SELECT id FROM transactions WHERE category_source = 'seed'")]
+    if ids:
+        categorize(conn, ids, use_llm=False, use_local=True)
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -192,6 +210,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for col, ddl in (("parent_id", "INTEGER REFERENCES categories(id) ON DELETE SET NULL"), ("grp", "TEXT")):
         if col not in cols:
             conn.execute(f"ALTER TABLE categories ADD COLUMN {col} {ddl}")
+    # v3 -> v4: credit card statements keep their bill box.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(statements)")}
+    for col, ddl in (("kind", "TEXT NOT NULL DEFAULT 'bank'"), ("statement_date", "TEXT"), ("due_date", "TEXT"),
+                     ("total_due_paise", "INTEGER"), ("min_due_paise", "INTEGER")):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE statements ADD COLUMN {col} {ddl}")
     conn.commit()
 
 
@@ -234,8 +258,11 @@ def _has_settings(conn: sqlite3.Connection) -> bool:
     return bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'").fetchone())
 
 
-def _seed(conn: sqlite3.Connection) -> None:
-    """Insert default categories and seed rules once; never overwrite user edits."""
+def _seed(conn: sqlite3.Connection) -> bool:
+    """Insert default categories and seed rules once; never overwrite user edits.
+
+    Returns True when the built-in keyword rules were replaced on an existing database.
+    """
     has_categories = conn.execute("SELECT COUNT(*) FROM categories").fetchone()[0]
     if not has_categories:
         conn.executemany(
@@ -269,8 +296,9 @@ def _seed(conn: sqlite3.Connection) -> None:
         "WHERE grp IS NULL"
     )
 
-    # Built-in keyword rules. Version 2 points them at sub-categories; replace older versions.
-    if get_setting(conn, "seeded:rules") != "2":
+    # Built-in keyword rules: replace older versions (see SEED_RULES_VERSION).
+    previous = get_setting(conn, "seeded:rules")
+    if previous != SEED_RULES_VERSION:
         conn.execute("DELETE FROM merchant_rules WHERE source = 'seed'")
         ids = {r["name"]: r["id"] for r in conn.execute("SELECT id, name FROM categories")}
         rows = []
@@ -284,7 +312,9 @@ def _seed(conn: sqlite3.Connection) -> None:
             "VALUES (?, ?, ?, ?, ?)",
             rows,
         )
-        set_setting(conn, "seeded:rules", "2")
+        set_setting(conn, "seeded:rules", SEED_RULES_VERSION)
+        return previous is not None
+    return False
 
 
 def category_tree(conn: sqlite3.Connection) -> dict[int, dict]:

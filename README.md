@@ -7,6 +7,7 @@ Everything runs on your own computer at `http://127.0.0.1:8765`. Your data lives
 ## What it does
 
 - **Imports statements:** Excel (`.xls`/`.xlsx`), CSV or PDF, including password-protected PDFs. You can drag them in, fetch them through [assisted net banking](#fetch-from-net-banking-assisted-login), or pull them from [Gmail](#gmail-optional-read-only). Overlapping statements never double-count.
+- **Reads credit card statements too**, so purchases made on the card count as spending and paying the bill doesn't. Each card's bill (amount due, minimum, due date) shows on the dashboard, marked paid or overdue. See [Credit cards](#credit-cards).
 - **Recognises the payee** in UPI, card, NEFT, IMPS, auto-debit (ACH/NACH), ATM and bank-charge narrations. So "Swiggy" is Swiggy whether you paid by UPI, card or a different UPI ID.
 - **Categorizes automatically** into 29 categories and 34 sub-categories (Food & Dining → Food Delivery / Restaurants & Cafes, Transport → Cabs & Autos / Public Transport / Vehicle Upkeep, ...):
   - your own rules first, then about 300 built-in keywords;
@@ -75,6 +76,22 @@ Low-confidence results land in **Review**. Accepting one turns it into your own 
 
 In **Categories** you can rename categories, add sub-categories, merge categories, hide ones you don't use, and choose whether each is a **need**, a **want** or **savings**. That choice drives the 50/30/20 split.
 
+### Credit cards
+
+When you pay a credit card bill from your bank account, the app counts it as a transfer, not spending. Otherwise every purchase would be counted twice. What you bought with the card only shows up once you import the **card statement**:
+
+1. Drop the card statement (PDF or Excel) on the **Import** tab, or fetch it through net banking or Gmail like a bank statement. Card PDFs are usually password-protected; the app asks for the password once and can remember it.
+2. The app recognises a card statement by its bill box: payment due date, minimum amount due, credit limit. The first time, it adds the card as an account of its own ("HDFC Credit Card"), going by the last 4 digits printed on the statement. You can rename it in **Settings**. To set the account up yourself, add an account of type **Credit card** with the card's last 4 digits.
+3. Purchases on the card are categorized like any other payment. Refunds and cashback count as income. Fees, finance charges and GST go to Bank Charges. The bill payment on the card ("PAYMENT RECEIVED", "NETBANKING TRANSFER", "AUTOPAY"...) is matched with the same amount leaving your bank account within 5 days, and both are marked **Credit Card Payment**.
+
+The dashboard then shows:
+
+- **Credit card bills:** each card's latest bill, the minimum due and the due date. It also shows how much you've paid since the statement (from the card itself or from your bank statement) and whether the bill is due, paid, part-paid or overdue.
+- **Spending on cards:** how much of the period's spending went on cards.
+- **A warning when card bills have no card statement behind them.** Such bills mean real spending is missing from the totals and the savings rate looks better than it is. The money plan is told about this too.
+
+Net banking keeps separate recorded steps for a bank's card statements, because they're on a different page from the account statement.
+
 ### Fetch from net banking (assisted login)
 
 **Import → Fetch from net banking**, pick the account, then **Open net banking**:
@@ -135,6 +152,7 @@ Add this to `%APPDATA%\Claude\claude_desktop_config.json` and restart Claude Des
 | `recategorize` | Fix a category (teaches the tracker, like the web app) |
 | `add_rule` | "Narration contains X → category" |
 | `list_categories`, `list_accounts` | Reference data |
+| `card_bills` | Each credit card's latest bill: amount due, due date, paid so far, status |
 | `money_plan` | The latest money plan |
 
 ## Privacy
@@ -204,5 +222,7 @@ tests/                 pytest suite with synthetic data and a fake bank
 ### Known limits
 
 - Statement layouts are recognised by their column headers. They're tested on real HDFC PDFs and on synthetic HDFC- and CUB-style files. CUB's real formats haven't been tested yet.
+- Credit card statements are tested on synthetic files in HDFC's older and newer layouts, not on a real card statement yet.
+- A card purchase converted to EMI shows up as the purchase plus the monthly EMIs, so it can be counted twice. Mark one side as you prefer.
 - Transaction-alert emails (between statements) aren't parsed yet.
 - Some merchant names arrive truncated by the bank ("Makemytrip India Pri"); that's display only.

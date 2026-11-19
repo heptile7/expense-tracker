@@ -159,6 +159,7 @@ async function loadDashboard() {
   $("#t-invested-sub").textContent = d.invest_rate == null || d.invest_rate > 1 ? "Not counted as spending" : `${pct(d.invest_rate)} of income · not counted as spending`;
   renderSplit(d);
   renderFacts(d.facts);
+  renderCards(d.cards || []);
   renderCategoryTable(d);
   renderRecurring(d);
   renderMerchants(d.top_merchants);
@@ -203,6 +204,29 @@ function renderFacts(facts) {
   $("#facts").innerHTML = facts.length
     ? facts.map((f) => `<li class="${f.tone}"><span class="icon" aria-label="${f.tone}">${icon[f.tone]}</span><span>${esc(f.text)}</span></li>`).join("")
     : `<li class="info"><span class="icon">i</span><span>Nothing unusual. Import more months to compare against your usual spending.</span></li>`;
+}
+
+const CARD_STATUS = {
+  paid: ["Paid", "good"], due: ["Due", ""], part_paid: ["Minimum paid", "medium"], overdue: ["Overdue", "high"],
+  unknown: ["Amount due not found", ""], no_statement: ["No statement yet", ""],
+};
+
+function renderCards(cards) {
+  $("#cards-card").hidden = !cards.length;
+  if (!cards.length) return;
+  const due = (c) => {
+    if (!c.due_date) return "—";
+    const when = c.status === "paid" ? "" : c.days_left > 1 ? `in ${c.days_left} days` : c.days_left === 1 ? "tomorrow"
+      : c.days_left === 0 ? "today" : `${-c.days_left} days ago`;
+    return `${fmtDate(c.due_date)}${when ? `<div class="sub">${when}</div>` : ""}`;
+  };
+  $("#cards").innerHTML = miniTable(cards, [
+    { h: "Card", f: (c) => nameCell(c.name, c.statement_date ? `Statement ${fmtDate(c.statement_date)} · ${money(c.spent, true)} spent` : "Import a card statement to see its bill") },
+    { h: "Bill", num: true, f: (c) => c.total_due == null ? "—" : `${money(c.total_due, true)}${c.min_due ? `<div class="sub">minimum ${money(c.min_due, true)}</div>` : ""}` },
+    { h: "Paid since", num: true, f: (c) => (c.statement_date ? money(c.paid, true) : "—") },
+    { h: "Due", num: true, f: due },
+    { h: "Status", f: (c) => { const [label, cls] = CARD_STATUS[c.status] || [c.status, ""]; return `<span class="pill ${cls}">${label}</span>`; } },
+  ], "");
 }
 
 function renderCategoryTable(d) {
@@ -572,8 +596,11 @@ const updateAcceptButton = () => {
 };
 
 // ── Import ───────────────────────────────────────────────────────────────────
-function accountSelect(selected) {
-  return `<select class="ri-account"><option value="">Choose account…</option>${(state.meta?.accounts || [])
+// kind: "credit_card" lists only card accounts, "bank" only bank accounts, null everything.
+const accountsOfKind = (kind) => (state.meta?.accounts || []).filter((a) => !kind || (a.type === "credit_card") === (kind === "credit_card"));
+
+function accountSelect(selected, kind = null) {
+  return `<select class="ri-account"><option value="">Choose ${kind === "credit_card" ? "card" : "account"}…</option>${accountsOfKind(kind)
     .map((a) => `<option value="${a.id}"${a.id === selected ? " selected" : ""}>${esc(a.name)}</option>`).join("")}</select>`;
 }
 
@@ -601,10 +628,11 @@ async function processFile(file, card, opts = {}) {
       $(".ri-pw", card).addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
       $(".ri-pw", card).focus();
     } else if (err.status === 409 && err.data?.needs_account) {
-      const hasAccounts = (state.meta?.accounts || []).length;
+      const kind = err.data.kind || null;
+      const hasAccounts = accountsOfKind(kind).length;
       card.innerHTML = head + (hasAccounts
-        ? `<div class="form-row">${accountSelect()}<button class="primary ri-go">Import</button></div>`
-        : `<div class="form-row"><button class="secondary" data-goto="settings">Add an account first</button></div>`);
+        ? `<div class="form-row">${accountSelect(null, kind)}<button class="primary ri-go">Import</button></div>`
+        : `<div class="form-row"><button class="secondary" data-goto="settings">${kind === "credit_card" ? "Add a credit card account first" : "Add an account first"}</button></div>`);
       $(".ri-go", card)?.addEventListener("click", () => {
         const id = $(".ri-account", card).value;
         if (id) processFile(file, card, { ...opts, account_id: id });
@@ -626,7 +654,7 @@ function renderImportResult(card, file, r) {
   if (s.seed) parts.push(`${s.seed} by built-in rules`);
   if (s.llm) parts.push(`${s.llm} by Claude`);
   if (s.local) parts.push(`${s.local} guessed offline`);
-  if (r.transfers) parts.push(`${r.transfers} transfers between your accounts`);
+  if (r.transfers) parts.push(r.kind === "credit_card" ? `${plural(r.transfers, "bill payment")} recognised` : `${r.transfers} transfers between your accounts`);
   if (s.fallback) parts.push(`${s.fallback} left uncategorized`);
   const period = r.period_start ? `${fmtDate(r.period_start)} – ${fmtDate(r.period_end)}` : "";
   const c = r.categorize || {};
@@ -634,9 +662,13 @@ function renderImportResult(card, file, r) {
     ? `${esc(c.llm_backend || "Claude")} looked at ${plural(c.llm_merchants, "new payee")}${c.llm_cost_usd ? ` ($${c.llm_cost_usd.toFixed(4)})` : ""}.` : "";
   const warn = c.llm_error
     ? `<div class="meta" style="color: var(--muted)">Claude wasn't available (${esc(c.llm_error)}), so new payees were guessed offline.</div>` : "";
+  const b = r.card;
+  const bill = b ? `<div class="meta">Credit card statement${b.total_due != null ? ` · bill ${money(b.total_due, true)}` : ""}` +
+    `${b.min_due ? ` (minimum ${money(b.min_due, true)})` : ""}${b.due_date ? `, due ${fmtDate(b.due_date)}` : ""}.` +
+    `${r.account_created ? ` Added it as a new account, “${esc(r.account_name)}”; rename it in Settings if you like.` : ""}</div>` : "";
   card.innerHTML = `<div class="title">${esc(file.name)} → ${esc(r.account_name)}</div>
     <div class="meta">${plural(r.n_new, "new transaction")}${r.n_duplicates ? `, ${r.n_duplicates} already present` : ""} · ${period}</div>
-    <div class="meta">${parts.join(" · ")}${parts.length ? ". " : ""}${claude}</div>${warn}`;
+    ${bill}<div class="meta">${parts.join(" · ")}${parts.length ? ". " : ""}${claude}</div>${warn}`;
 }
 
 async function handleFiles(files) {
@@ -689,15 +721,17 @@ async function loadNetbanking() {
 
 function renderNbBank() {
   const b = nbBank();
+  const card = nbAccount()?.type === "credit_card";  // cards have their own statement page, so their own steps
+  const what = b ? `${esc(b.name)}${card ? " (credit card statements)" : ""}` : "";
   $("#nb-url").value = b?.login_url || "";
-  const r = b?.route;
+  const r = card ? b?.card_route : b?.route;
   $("#nb-route").innerHTML = r
-    ? `Saved steps for ${esc(b.name)} (recorded ${fmtDate(r.recorded_at.slice(0, 10))}): ${r.steps.map(esc).join(" → ")}
+    ? `Saved steps for ${what} (recorded ${fmtDate(r.recorded_at.slice(0, 10))}): ${r.steps.map(esc).join(" → ")}
        <button class="link" id="nb-forget">Forget these steps</button>`
-    : b ? `No saved steps for ${esc(b.name)} yet. Use “Record my steps” once after logging in.` : "";
+    : b ? `No saved steps for ${what} yet. Use “Record my steps” once after logging in.` : "";
   $("#nb-forget")?.addEventListener("click", async () => {
-    if (!confirm(`Forget the saved steps for ${b.name}?`)) return;
-    nb.banks = await api("DELETE", `/api/netbanking/banks/${b.bank}/route`).catch(fail) || nb.banks;
+    if (!confirm(`Forget the saved steps for ${b.name}${card ? " credit card statements" : ""}?`)) return;
+    nb.banks = await api("DELETE", `/api/netbanking/banks/${b.bank}/route?kind=${card ? "credit_card" : "bank"}`).catch(fail) || nb.banks;
     renderNbBank();
   });
 }

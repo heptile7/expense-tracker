@@ -43,6 +43,26 @@ def cub_csv(path: Path, rows: list[tuple], account_no: str = "500101012349876") 
     return path
 
 
+def card_csv(path: Path, rows: list[tuple], card_no: str = "4386 XXXX XXXX 5521",
+             bill: tuple = ("18/11/2026", "08/12/2026", "12,345.00", "620.00")) -> Path:
+    """HDFC-style credit card statement: a bill box, then Date | Transaction Description | Amount.
+
+    rows: (dd/mm/yyyy, description, amount text). Credits carry "Cr" ("9,876.00 Cr"), purchases are plain.
+    bill: (statement date, payment due date, total dues, minimum amount due).
+    """
+    lines = [
+        "HDFC Bank Credit Card Statement,,",
+        f"Card No,{card_no},",
+        "Statement Date,Payment Due Date,Total Dues,Minimum Amount Due",
+        ",".join(f'"{v}"' for v in bill),
+        ",,",
+        "Date,Transaction Description,Amount (in Rs.)",
+    ]
+    lines += [f'{d},"{desc}","{amt}"' for d, desc, amt in rows]
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
 MONTH1 = [
     ("01/04/24", "UPI-SWIGGY-SWIGGY8.PAYU@HDFCBANK-HDFC0MERUPI-412345678901-PAYMENT FROM PHONE", "0000412345678901", 450.00, None, 49550.00),
     ("02/04/24", "UPI-KUMAR STORES-KUMARSTORES@OKSBI-SBIN0001234-412345678902-UPI", "0000412345678902", 820.50, None, 48729.50),

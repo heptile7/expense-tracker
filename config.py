@@ -168,12 +168,15 @@ LOCAL_LEXICON: list[tuple[str, str, list[str]]] = [
 # Keywords match whole words in the upper-cased narration (an optional trailing
 # "S" is allowed). Direction None = debit or credit.
 SEED_RULES: list[tuple[str, str | None, list[str]]] = [
-    ("Refunds & Cashback", "credit", ["REFUND", "RFND", "REVERSAL", "CASHBACK", "CRV POS"]),
+    ("Refunds & Cashback", "credit", ["REFUND", "RFND", "REVERSAL", "CASHBACK", "CRV POS", "WAIVER", "REWARDS REDEMPTION"]),
     ("Interest", "credit", ["INT.PD", "INT PD", "INTEREST PAID", "INTEREST CREDIT", "SB INT", "CREDIT INTEREST", "INT CREDIT"]),
     ("Salary", "credit", ["SALARY", "SAL CREDIT", "PAYROLL"]),
     ("Credit Card Payment", None, ["CC PAYMENT", "CCPAYMENT", "CREDIT CARD PAYMENT", "CARD BILL", "CRED CLUB", "CREDCLUB", "DREAMPLUG", "PAYMENT RECEIVED THANK YOU"]),
-    ("Credit Card Payment", "debit", ["CRED"]),
-    ("Bank Charges", "debit", ["CHARGES", "CHRGS", "CHGS", "SMS CHG", "ANNUAL FEE", "MIN BAL", "CONSOLIDATED CHARGES", "DEBIT CARD FEE"]),
+    # Paying a card bill through CRED. Not a bare "CRED": "...-PAID VIA CRED" is a purchase made with the CRED app.
+    ("Credit Card Payment", "debit", ["UPI-CRED", "CRED.CLUB"]),
+    ("Bank Charges", "debit", ["CHARGES", "CHRGS", "CHGS", "SMS CHG", "ANNUAL FEE", "MIN BAL", "CONSOLIDATED CHARGES", "DEBIT CARD FEE",
+                               "FINANCE CHARGE", "LATE PAYMENT FEE", "LATE FEE", "OVERLIMIT FEE", "OVER LIMIT FEE", "CASH ADVANCE FEE",
+                               "MARKUP FEE", "MARK UP FEE", "FOREX MARKUP", "CROSS CURRENCY", "IGST", "CGST", "SGST"]),
     ("Cash Withdrawal", "debit", ["ATW", "NWD", "EAW", "ATM WDL", "ATM CASH", "CASH WDL", "CASH WITHDRAWAL", "ATM WITHDRAWAL"]),
     ("Taxes", "debit", ["INCOME TAX", "CBDT", "TIN NSDL", "ADVANCE TAX", "PROPERTY TAX", "GST PAYMENT"]),
     ("Mutual Funds & SIPs", None, ["ICCL", "INDIAN CLEARING", "MUTUAL FUND", "MUTUALFUND", "SIP", "CAMS", "KFINTECH", "KUVERA", "ETMONEY", "PAYTM MONEY"]),

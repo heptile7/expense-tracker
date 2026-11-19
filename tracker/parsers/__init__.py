@@ -2,7 +2,12 @@
 
 All layouts go through ``table_sniff.parse_grid`` which finds the transaction table by
 its header names, so HDFC and CUB exports (and most other banks) need no per-bank code.
-Text-only PDFs fall back to ``pdf_text.parse_text``.
+Text-only PDFs fall back to ``pdf_text.parse_text`` (bank statements) or
+``card_text.parse_card_text`` (credit card statements).
+
+A statement is treated as a credit card statement when its text has a card bill box
+(payment due date, minimum due, credit limit), or when the caller says so because the
+chosen account is a credit card.
 """
 
 import csv
@@ -11,17 +16,26 @@ import logging
 from pathlib import Path
 
 from tracker.parsers.base import (
+    BANK,
+    CARD,
+    CardSummary,
     ParsedStatement,
     PasswordRequired,
     RawTxn,
     StatementError,
+    cell_text,
     detect_account_last4,
     detect_bank,
+    detect_card_last4,
+    detect_card_statement,
 )
+from tracker.parsers.card_text import card_summary, parse_card_text
 from tracker.parsers.pdf_text import parse_text
 from tracker.parsers.table_sniff import parse_grid
 
-__all__ = ["ParsedStatement", "PasswordRequired", "RawTxn", "StatementError", "parse_statement"]
+__all__ = [
+    "BANK", "CARD", "CardSummary", "ParsedStatement", "PasswordRequired", "RawTxn", "StatementError", "parse_statement",
+]
 
 log = logging.getLogger(__name__)
 
@@ -31,17 +45,18 @@ SUPPORTED = {".xls", ".xlsx", ".xlsm", ".csv", ".txt", ".pdf"}
 PDF_X_TOLERANCE = 1.5
 
 
-def parse_statement(path: str | Path, password: str | None = None) -> ParsedStatement:
+def parse_statement(path: str | Path, password: str | None = None, kind: str | None = None) -> ParsedStatement:
+    """kind: "bank" or "credit_card" to force how amounts are read; None detects it from the file."""
     path = Path(path)
     ext = path.suffix.lower()
     if ext not in SUPPORTED:
         raise StatementError(f"Unsupported file type {ext}. Use Excel (.xls/.xlsx), CSV or PDF.")
     if ext == ".pdf":
-        result = _parse_pdf(path, password)
+        result = _parse_pdf(path, password, kind)
     elif ext in {".csv", ".txt"}:
-        result = _first_match(_delimited_grids(path.read_bytes()), "csv")
+        result = _first_match(_delimited_grids(path.read_bytes()), "csv", kind)
     else:
-        result = _first_match(_excel_grids(path), "excel")
+        result = _first_match(_excel_grids(path), "excel", kind)
     if result is None:
         raise StatementError(
             "Couldn't find a transaction table (looked for Date, Narration/Description and Debit/Credit or Amount columns)."
@@ -49,10 +64,19 @@ def parse_statement(path: str | Path, password: str | None = None) -> ParsedStat
     return result
 
 
-def _first_match(grids, layout: str) -> ParsedStatement | None:
+def _grid_text(grid: list[list]) -> str:
+    return "\n".join(" ".join(t for t in (cell_text(c) for c in row) if t) for row in grid)
+
+
+def _first_match(grids, layout: str, kind: str | None) -> ParsedStatement | None:
     for grid in grids:
-        parsed = parse_grid(grid, layout)
+        text = _grid_text(grid)
+        grid_kind = kind or (CARD if detect_card_statement(text) else None)
+        parsed = parse_grid(grid, layout, grid_kind)
         if parsed:
+            if parsed.kind == CARD:
+                parsed.card = card_summary(text)
+                parsed.account_last4 = detect_card_last4(text) or parsed.account_last4
             return parsed
     return None
 
@@ -104,7 +128,7 @@ def _delimited_grids(data: bytes):
         yield [row for row in csv.reader(io.StringIO(text), delimiter=delim)]
 
 
-def _parse_pdf(path: Path, password: str | None) -> ParsedStatement | None:
+def _parse_pdf(path: Path, password: str | None, kind: str | None) -> ParsedStatement | None:
     import pdfplumber
 
     try:
@@ -122,13 +146,18 @@ def _parse_pdf(path: Path, password: str | None) -> ParsedStatement | None:
             for table in page.extract_tables({"text_x_tolerance": PDF_X_TOLERANCE}):
                 rows.extend([[(c or "").replace("\n", " ") for c in r] for r in table])
     full_text = "\n".join(texts)
-    parsed = parse_grid(rows, "pdf-table") if rows else None
+    kind = kind or (CARD if detect_card_statement(full_text) else BANK)
+    parsed = parse_grid(rows, "pdf-table", kind) if rows else None
     if parsed:
         # Preamble (account number, bank) usually sits outside the table in PDFs.
         parsed.bank = parsed.bank or detect_bank(full_text)
-        parsed.account_last4 = parsed.account_last4 or detect_account_last4(full_text)
+        if kind == CARD:
+            parsed.account_last4 = detect_card_last4(full_text) or parsed.account_last4
+            parsed.card = card_summary(full_text)
+        else:
+            parsed.account_last4 = parsed.account_last4 or detect_account_last4(full_text)
         return parsed
-    return parse_text(full_text)
+    return parse_card_text(full_text) if kind == CARD else parse_text(full_text)
 
 
 def _is_password_error(exc: BaseException) -> bool:

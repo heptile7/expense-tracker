@@ -5,17 +5,25 @@ summary below it. We locate the header row by its column names, map the columns,
 read rows until the data stops. Works for HDFC (Date | Narration | Chq./Ref.No. |
 Value Dt | Withdrawal Amt. | Deposit Amt. | Closing Balance), CUB, and most other
 Indian bank layouts, including a single Amount column with a Dr/Cr indicator.
+
+Credit card statements (``kind="credit_card"``) read the same way, except that a lone
+Amount column means a purchase unless it is marked as a credit (see ``card_amount``).
 """
 
 import re
 from dataclasses import dataclass
 
 from tracker.parsers.base import (
+    BANK,
+    CARD,
     ParsedStatement,
     RawTxn,
+    card_amount,
     cell_text,
     detect_account_last4,
     detect_bank,
+    detect_card_last4,
+    detect_card_statement,
     parse_amount,
     parse_date,
 )
@@ -121,8 +129,16 @@ def _get(row: list, idx: int | None):
     return row[idx]
 
 
-def parse_grid(grid: list[list], layout: str = "table") -> ParsedStatement | None:
-    """Return a ParsedStatement if a transaction table is found in the grid, else None."""
+def _card_number(cell):
+    found = card_amount(cell)
+    return found[0] if found else None
+
+
+def parse_grid(grid: list[list], layout: str = "table", kind: str | None = None) -> ParsedStatement | None:
+    """Return a ParsedStatement if a transaction table is found in the grid, else None.
+
+    kind: "bank" or "credit_card"; None works it out from the text above the table.
+    """
     header_idx, cols = None, None
     for i, row in enumerate(grid[:200]):
         cols = detect_columns(row)
@@ -133,15 +149,19 @@ def parse_grid(grid: list[list], layout: str = "table") -> ParsedStatement | Non
         return None
 
     preamble = " ".join(cell_text(c) for row in grid[:header_idx] for c in row)
-    header_norm = [_norm_header(c) for c in grid[header_idx]]
-    out = ParsedStatement(bank=detect_bank(preamble), account_last4=detect_account_last4(preamble), layout=layout)
+    kind = kind or (CARD if detect_card_statement(preamble) else BANK)
+    last4 = (detect_card_last4(preamble) if kind == CARD else None) or detect_account_last4(preamble)
+    out = ParsedStatement(bank=detect_bank(preamble), account_last4=last4, layout=layout, kind=kind)
 
     for row in grid[header_idx + 1 :]:
-        if [_norm_header(c) for c in row] == header_norm:
-            continue  # header repeated on a new PDF page
+        new_cols = detect_columns(row)
+        if new_cols:
+            cols = new_cols  # header repeated on a new PDF page, or the next table (e.g. international card spends)
+            continue
         txn_date = parse_date(_get(row, cols.date))
         narration = cell_text(_get(row, cols.narration))
-        amounts = [parse_amount(_get(row, c)) for c in cols.amount_cols]
+        num = _card_number if kind == CARD else parse_amount
+        amounts = [num(_get(row, c)) for c in cols.amount_cols]
         has_amount = any(a not in (None, 0) for a in amounts)
 
         if txn_date is None:
@@ -153,8 +173,8 @@ def parse_grid(grid: list[list], layout: str = "table") -> ParsedStatement | Non
             continue  # opening-balance rows and separators
 
         if cols.debit is not None and cols.credit is not None:
-            debit = parse_amount(_get(row, cols.debit)) or 0
-            credit = parse_amount(_get(row, cols.credit)) or 0
+            debit = num(_get(row, cols.debit)) or 0
+            credit = num(_get(row, cols.credit)) or 0
             if debit and not credit:
                 amount, direction = abs(debit), "debit"
             elif credit and not debit:
@@ -163,15 +183,16 @@ def parse_grid(grid: list[list], layout: str = "table") -> ParsedStatement | Non
                 net = credit - debit
                 amount, direction = abs(net), ("credit" if net > 0 else "debit")
         else:
-            raw = parse_amount(_get(row, cols.amount)) or 0
             flag = cell_text(_get(row, cols.drcr)).upper()
+            if kind == CARD:
+                amount, direction = card_amount(_get(row, cols.amount)) or (0, "debit")
+            else:
+                raw = parse_amount(_get(row, cols.amount)) or 0
+                amount, direction = abs(raw), ("debit" if raw < 0 else "credit")
             if flag.startswith(("D", "W")):
                 direction = "debit"
             elif flag.startswith(("C", "DEP")):
                 direction = "credit"
-            else:
-                direction = "debit" if raw < 0 else "credit"
-            amount = abs(raw)
         if amount == 0:
             continue
 

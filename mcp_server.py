@@ -172,11 +172,20 @@ def spending_overview(period: str = "month", month: str | None = None) -> dict:
     """
     o = insights.overview(period, month)
     keep = ("period", "income", "spent", "needs", "wants", "invested", "saved", "savings_rate", "daily_average",
-            "projected_spend", "recurring_monthly", "recurring_share_of_income", "facts", "unusual")
+            "projected_spend", "recurring_monthly", "recurring_share_of_income", "facts", "unusual", "card_spent",
+            "card_bills_not_itemised")
     out = {k: o[k] for k in keep}
     out["categories"] = [{k: c[k] for k in ("name", "group", "amount", "usual", "change_pct", "budget", "children")} for c in o["categories"]]
     out["recurring"] = [{k: r[k] for k in ("payee", "category", "monthly", "active")} for r in o["recurring"]]
     return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+def card_bills() -> list[dict]:
+    """Each credit card's latest bill: total and minimum due, due date, paid since the statement, and status
+    (due | paid | part_paid | overdue | unknown | no_statement). Amounts in rupees."""
+    with db.session() as conn:
+        return insights.card_bills(conn)
 
 
 @mcp.tool(annotations=READ_ONLY)

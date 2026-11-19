@@ -55,6 +55,15 @@ _CITIES = {
     "ERODE", "TIRUPUR", "VELLORE", "KOCHI", "AHMEDABAD", "JAIPUR", "LUCKNOW", "INDIA", "MUM", "BLR", "CHN", "DEL",
 }
 
+# Card statements end a merchant with its city, country and, abroad, the currency: "NETFLIX.COM LOS GATOS USD".
+_PLACE_CODES = {"USD", "EUR", "GBP", "SGD", "AED", "AUD", "CAD", "JPY", "USA", "US", "GB", "GBR", "SG", "SGP", "IRL", "IE",
+                "NLD", "NL", "ARE", "AE", "LUX"}
+# Payment processors in front of card merchants: "PYU*SWIGGY", "RAZ*ZOMATO", "SQ*CAFE".
+_PROCESSOR_RE = re.compile(r"(?<![A-Z0-9])[A-Z]{2,5}\*(?=[A-Z])")
+
+# "(Ref# 00000012345678)" after a card payment.
+_CARD_REF_RE = re.compile(r"\(\s*REF\b[^)]*\)")
+
 # Words that carry no meaning about what was bought (channel markers, bank codes, cities).
 STOP_WORDS = frozenset(_NOISE_WORDS | _BANK_CODES | _CITIES | {"MERUPI", "YBLUPI", "UPIAR", "UPIOUT", "NETBANK"})
 
@@ -112,7 +121,8 @@ def _clean_name(raw: str) -> str:
     words = [w.strip(" .,;*#()") for w in raw.split()]
     words = [w for w in words if w and not _is_noise_word(w) and w != "WWW"]
     # Card terminals often wrap the merchant in a city and the acquiring bank: "BANGALORE SWIGGY ... HDFC BANK"
-    while len(words) > 1 and (words[-1] in _CITIES or words[-1] in _BANK_CODES or words[-1] in {"BANK", "BAN", "BA"}):
+    while len(words) > 1 and (words[-1] in _CITIES or words[-1] in _BANK_CODES or words[-1] in _PLACE_CODES
+                              or words[-1] in {"BANK", "BAN", "BA"}):
         words.pop()
     while len(words) > 1 and words[0] in _CITIES:
         words.pop(0)
@@ -161,6 +171,8 @@ def extract_ref(narration: str) -> str | None:
 
 def normalize(narration: str, direction: str) -> Normalized:
     text = re.sub(r"\s+", " ", (narration or "").upper()).strip()
+    text = _PROCESSOR_RE.sub("", text)
+    text = _CARD_REF_RE.sub(" ", text).strip()
     channel = detect_channel(text)
     d = "D" if direction == "debit" else "C"
 

@@ -142,13 +142,18 @@ RECORDER_JS = r"""
 # ── Routes (recorded steps) ───────────────────────────────────────────────────
 
 
-def _route_key(bank: str) -> str:
-    return f"netbanking_route:{bank}"
+def route_profile(bank: str, card: bool = False) -> str:
+    """Recorded steps are kept per bank, and separately for that bank's credit cards (a different statement page)."""
+    return f"{bank}:card" if card else bank
 
 
-def get_route(bank: str) -> dict | None:
+def _route_key(profile: str) -> str:
+    return f"netbanking_route:{profile}"
+
+
+def get_route(profile: str) -> dict | None:
     with db.session() as conn:
-        raw = db.get_setting(conn, _route_key(bank))
+        raw = db.get_setting(conn, _route_key(profile))
     if not raw:
         return None
     route = json.loads(raw)
@@ -164,16 +169,16 @@ def get_route(bank: str) -> dict | None:
     return route
 
 
-def save_route(bank: str, steps: list[dict]) -> dict:
+def save_route(profile: str, steps: list[dict]) -> dict:
     route = {"steps": steps, "recorded_at": datetime.now().isoformat(timespec="seconds")}
     with db.session() as conn:
-        db.set_setting(conn, _route_key(bank), json.dumps(route))
+        db.set_setting(conn, _route_key(profile), json.dumps(route))
     return route
 
 
-def forget_route(bank: str) -> None:
+def forget_route(profile: str) -> None:
     with db.session() as conn:
-        conn.execute("DELETE FROM app_settings WHERE key = ?", (_route_key(bank),))
+        conn.execute("DELETE FROM app_settings WHERE key = ?", (_route_key(profile),))
 
 
 def login_url(bank: str) -> str:
@@ -191,16 +196,16 @@ def set_login_url(bank: str, url: str) -> None:
 
 def banks_info() -> list[dict]:
     out = []
+    def describe(route):
+        return {"recorded_at": route["recorded_at"], "steps": [describe_step(s) for s in route["steps"]]} if route else None
+
     for bank, info in BANKS.items():
-        route = get_route(bank)
         out.append({
             "bank": bank,
             "name": info["name"],
             "login_url": login_url(bank),
-            "route": {
-                "recorded_at": route["recorded_at"],
-                "steps": [describe_step(s) for s in route["steps"]],
-            } if route else None,
+            "route": describe(get_route(route_profile(bank))),
+            "card_route": describe(get_route(route_profile(bank, card=True))),
         })
     return out
 
@@ -320,6 +325,7 @@ class NetBankingSession:
     def __init__(self, account: dict, url: str, headless: bool = False, channel: str | None = None):
         self.account = account
         self.bank = account["bank"] if account["bank"] in BANKS else "OTHER"
+        self.profile = route_profile(self.bank, account.get("type") == "credit_card")
         self.url = url
         self.headless = headless
         self.channel = channel
@@ -368,7 +374,7 @@ class NetBankingSession:
                 "recording": self.recording,
                 "recorded_steps": [describe_step(s) for s in finalize_steps(list(self.raw_steps))] if self.recording else [],
                 "imports": list(self.imports),
-                "has_route": get_route(self.bank) is not None,
+                "has_route": get_route(self.profile) is not None,
             }
 
     # Browser thread
@@ -454,7 +460,7 @@ class NetBankingSession:
 
     def _idle_message(self) -> str:
         bank = BANKS[self.bank]["name"]
-        if get_route(self.bank):
+        if get_route(self.profile):
             return (f"Log in to {bank} in the browser window, then click “Fetch statement”. "
                     "You can also download statements yourself: they're imported automatically.")
         return (f"Log in to {bank} in the browser window. Then either download a statement yourself "
@@ -518,7 +524,7 @@ class NetBankingSession:
             raw = list(self.raw_steps)
         steps = finalize_steps(raw)
         if save and steps:
-            save_route(self.bank, steps)
+            save_route(self.profile, steps)
             log.info("Net banking %s: saved a recording of %d steps (%s)", self.bank, len(steps), ", ".join(s["action"] for s in steps))
             self._set("open", f"Saved {len(steps)} steps for {BANKS[self.bank]['name']}. Next time: log in, then click “Fetch statement”.")
             return {"steps": [describe_step(s) for s in steps]}
@@ -527,7 +533,7 @@ class NetBankingSession:
 
     # Replay
     def _replay(self, context, start: date, end: date) -> dict:
-        route = get_route(self.bank)
+        route = get_route(self.profile)
         if not route:
             raise ValueError("No recorded steps for this bank yet. Use “Record my steps” once.")
         steps = route["steps"]

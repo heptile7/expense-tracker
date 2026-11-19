@@ -227,7 +227,9 @@ def import_statement(
         return result.as_dict()
     except NeedsAccount as exc:
         log.warning("Upload (%s) needs an account choice: %s", path.suffix, type(exc).__name__)
-        return JSONResponse({"error": str(exc), "needs_account": True, "bank": exc.bank, "last4": exc.last4}, status_code=409)
+        return JSONResponse(
+            {"error": str(exc), "needs_account": True, "bank": exc.bank, "last4": exc.last4, "kind": exc.kind}, status_code=409
+        )
     except StatementError as exc:
         log.warning("Upload (%s) could not be read: %s", path.suffix, exc)
         return JSONResponse({"error": str(exc)}, status_code=422)
@@ -383,8 +385,8 @@ def netbanking_set_bank(bank: str, body: dict = Body(...)):
 
 
 @app.delete("/api/netbanking/banks/{bank}/route")
-def netbanking_forget_route(bank: str):
-    netbanking.forget_route(bank)
+def netbanking_forget_route(bank: str, kind: str = "bank"):
+    netbanking.forget_route(netbanking.route_profile(bank, card=kind == "credit_card"))
     return netbanking.banks_info()
 
 

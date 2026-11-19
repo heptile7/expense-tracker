@@ -280,6 +280,7 @@ td input { min-height: 30px; padding: 3px 8px; width: 100%; min-width: 80px; }
 .action .d { color: var(--text-2); grid-column: 1 / -1; }
 .action .save { font-variant-numeric: tabular-nums; color: var(--good-text); font-weight: 600; white-space: nowrap; }
 .pill.high { color: var(--critical); }
+.pill.good { color: var(--good-text); }
 .pill.medium { color: var(--text); }
 .compare { display: grid; grid-template-columns: 90px 1fr; gap: 6px 12px; align-items: center; margin: 8px 0 4px; font-size: 13px; color: var(--text-2); }
 .compare .segbar { margin: 0; height: 22px; }

@@ -39,6 +39,9 @@ Write a short, specific money plan:
 - Do NOT recommend specific investment products, funds, stocks, insurance policies, loans or tax schemes,
   and don't predict returns. You may say "invest regularly" or "review your insurance cover" and suggest
   speaking to a SEBI-registered adviser for those decisions.
+- card_bills_not_itemised_monthly is money paid towards credit card bills whose card statements haven't been
+  imported: real spending of unknown category that is NOT included in "spent" or the savings rate. If it is
+  sizeable, say that the real savings rate is lower and suggest importing card statements to see that spending.
 - Keep it brief: a 2-3 sentence summary and 3-6 actions. Plain language, no jargon."""
 
 
@@ -168,6 +171,8 @@ def build_snapshot(months_back: int = 3) -> dict:
             for mm in three["top_merchants"][:10]
         ],
         "payments_to_individuals_last_3_months": three["people_total"],
+        # Card bills paid with no card statement imported: real spending of unknown category, not in "spent".
+        "card_bills_not_itemised_monthly": round((three["card_bills_not_itemised"]["amount"] or 0) / 3, 2),
         "current_budgets": budgets,
     }
 
@@ -282,6 +287,11 @@ def offline_plan(s: dict) -> dict:
     if a["spent"] and cash / a["spent"] >= 0.1:
         actions.append({"title": "Track cash spending", "priority": "low", "category": "Cash Withdrawal", "monthly_saving": 0,
                         "detail": f"About ₹{cash:,.0f} a month goes out as cash, which this app can't see. Prefer UPI or note cash spends."})
+    card_gap = s.get("card_bills_not_itemised_monthly") or 0
+    if card_gap >= 1000:
+        actions.insert(0, {"title": "Import your credit card statements", "priority": "high", "category": "", "monthly_saving": 0,
+                           "detail": f"About ₹{card_gap:,.0f} a month goes to card bills with no card statement imported, so that "
+                                     "spending isn't counted above and your real savings rate is lower than shown."})
 
     budgets = []
     for name, v in cats.items():

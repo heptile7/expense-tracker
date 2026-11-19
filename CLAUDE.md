@@ -4,7 +4,7 @@ Guidance for Claude Code working in this repository. User-facing docs are in `RE
 
 ## What this is
 
-A local, single-user expense tracker for Indian bank accounts (HDFC, City Union Bank). It imports statements (Excel/CSV/PDF upload, assisted net banking download, Gmail attachments), works out a payee for every transaction, categorizes it (rules → Claude → offline guess), learns from the user's corrections, and shows statistics plus a money plan. FastAPI backend + vanilla JS page, SQLite, an MCP server for Claude Desktop. Runs on Windows; the user's shell is PowerShell.
+A local, single-user expense tracker for Indian bank accounts (HDFC, City Union Bank) and credit cards. It imports bank and card statements (Excel/CSV/PDF upload, assisted net banking download, Gmail attachments), works out a payee for every transaction, categorizes it (rules → Claude → offline guess), learns from the user's corrections, and shows statistics plus a money plan. FastAPI backend + vanilla JS page, SQLite, an MCP server for Claude Desktop. Runs on Windows; the user's shell is PowerShell.
 
 ## Commands
 
@@ -28,18 +28,18 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 | `app.py` | FastAPI routes, request logging middleware, error handlers. Thin: calls `tracker/service.py`. |
 | `mcp_server.py` | MCP tools for Claude Desktop (MCP SDK v2: `from mcp.server.mcpserver import MCPServer`). Same service layer as the web app. |
 | `config.py` | Paths (overridable via `EXPENSE_TRACKER_DATA`/`_DB`), model IDs, default categories, sub-categories, needs/wants groups, seed keyword rules, local lexicon. |
-| `tracker/db.py` | Schema, migrations (`PRAGMA user_version`, now 3), seeding, `category_tree()`, `get_setting`/`set_setting`. |
+| `tracker/db.py` | Schema, migrations (`PRAGMA user_version`, now 4), seeding (`SEED_RULES_VERSION`), `category_tree()`, `get_setting`/`set_setting`. |
 | `tracker/normalize.py` | Narration → channel, payee, UPI ID, **merchant key** (`D:SWIGGY` / `C:ACME TECHNOLOGIES`). |
-| `tracker/parsers/` | Statement readers. `table_sniff.py` finds the table by header names; `pdf_text.py` is the text fallback (direction from running balance). |
-| `tracker/importer.py` | Parse → pick account → fingerprint dedupe → insert → categorize → transfers. |
+| `tracker/parsers/` | Statement readers. `table_sniff.py` finds the table by header names; `pdf_text.py` is the bank text fallback (direction from running balance); `card_text.py` reads card statements (Cr / `+` / trailing C credits, `C` rupee glyph, reward points) and the bill box. `ParsedStatement.kind` is `bank` or `credit_card`. |
+| `tracker/importer.py` | Parse → pick account (a card statement goes to a card account, created from its last 4 digits if needed) → fingerprint dedupe (identical rows in one file get an occurrence number) → insert → card payments → categorize → transfers. |
 | `tracker/categorizer.py` | Priority pipeline (below). `categorize(conn, ids, classifier, use_llm, use_local)`. |
 | `tracker/llm.py` | Claude routes: `HaikuClassifier` (API), `ClaudeCodeClassifier` (the `claude` CLI on the user's subscription), `ChainClassifier`, `structured_completion` (money plan). |
 | `tracker/local_classifier.py` | Offline naive Bayes on payee/UPI/remark words. |
-| `tracker/transfers.py` | Self-transfer and card-payment detection. |
-| `tracker/insights.py` | Dashboard statistics, recurring commitments, unusual payments, plain-language facts. |
+| `tracker/transfers.py` | Self-transfer and card-payment detection. Card purchases never pair; a card credit pairs with a bank debit within ±5 days only if it looks like a bill payment (`looks_like_card_payment`). |
+| `tracker/insights.py` | Dashboard statistics, recurring commitments, unusual payments, card bills (`card_bills`) and bill payments with no card statement (`card_bills_not_itemised`), plain-language facts. |
 | `tracker/advisor.py` | Money plan: totals-only snapshot → Claude (Opus) or offline rules; budgets. |
 | `tracker/service.py` | Shared operations for UI and MCP (categories, accounts, rules, budgets, corrections, summaries). |
-| `tracker/fetch/netbanking.py` | Assisted net banking: Playwright drives the user's Edge; recorder JS + replay. |
+| `tracker/fetch/netbanking.py` | Assisted net banking: Playwright drives the user's Edge; recorder JS + replay. Recorded steps are stored per `route_profile`: the bank (`HDFC`) or its cards (`HDFC:card`). |
 | `tracker/fetch/gmail.py`, `secrets.py` | Gmail (read-only) statement fetch; PDF passwords in Windows Credential Manager via `keyring`. |
 | `tracker/logs.py` | Rotating logs in `data/logs/` (`app.log`, `mcp.log`). |
 | `static/app.js`, `templates/index.html` | Single-page UI, no build step, no framework. |
@@ -51,6 +51,8 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 `manual` (one-off) → user rules (exact merchant key, then contains/regex, longest first) → seed keyword rules (config order) → cached Claude answer (`source='llm'` exact rule) → Claude for the remaining *unique* merchant keys (results cached) → offline guess (`category_source='local'`, never cached) → `fallback` (Uncategorized).
 
 - Transfer detection (`category_source='transfer'`) runs after categorization. It outranks everything except the user's rules.
+- On card statements, payments received are marked Credit Card Payment *before* categorization, so they never go to Claude.
+- Card purchases are spending; the bill payment is a transfer on both sides, so nothing counts twice. A bank-side bill payment with no imported card statement is shown as "not itemised" (spending is understated).
 - A correction with scope `merchant` upserts a user exact rule and re-categorizes every non-manual transaction with that merchant key. Scope `single` marks one row `manual`.
 - Claude picks the most specific sub-category; reports roll sub-categories up into their parent (`db.category_tree`).
 
@@ -61,12 +63,15 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 - Plain `sqlite3` through `db.session()`, which commits on success. No ORM. Use parameterised SQL only.
 - Python 3.12, ruff (`ruff.toml`, 120 columns). Logging via `logging.getLogger(__name__)`, never `print` in library code.
 - New behaviour gets a test. Tests use synthetic data only: build statements with `tests/helpers.py`, fake Claude with `FakeClassifier`. A unit test never calls the real API or CLI (`conftest.py` patches `default_classifier`).
+- Card statement tests build files with `helpers.card_csv` or feed `parse_card_text` made-up text in both HDFC layouts (`tests/test_cards.py`).
 - Net banking tests run against `tests/fake_bank.py` in headless Edge. Keep the fake bank as awkward as real banks: auto-numbered ids, scripted downloads, calendar pop-ups.
 
 ## Database changes
 
 - Bump `SCHEMA_VERSION` and add a step in `_migrate()` / `_seed()`. The migration must keep existing data (`tests/test_db.py` shows the pattern).
 - One-time data changes go behind an `app_settings` marker (e.g. `seeded:rules`), never on every start.
+- Changing `config.SEED_RULES`: bump `db.SEED_RULES_VERSION`. On the next start the seed rules are replaced and re-run (no Claude) on every transaction they had categorized.
+- Seed keywords match whole words anywhere in the narration, so avoid short ones that occur in remarks (a bare `CRED` caught "PAID VIA CRED" purchases).
 - Before running anything that rewrites the user's real `data/expenses.db` (re-import, refine, migration), copy it to `data/expenses-backup-<timestamp>.db` first.
 
 ## Privacy rules (non-negotiable)
