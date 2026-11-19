@@ -60,6 +60,81 @@ DEFAULT_CATEGORIES: list[tuple[str, str, str, str]] = [
     (UNCATEGORIZED, "expense", "#ced4da", "Could not be determined"),
 ]
 
+# Sub-categories: (parent, [(name, description)]). Claude picks the most specific one that fits;
+# reports roll them up into the parent and let you drill down.
+SUBCATEGORIES: dict[str, list[tuple[str, str]]] = {
+    "Food & Dining": [
+        ("Food Delivery", "Swiggy, Zomato and other food delivery apps"),
+        ("Restaurants & Cafes", "Eating out: restaurants, messes, cafes, bakeries, tea and snack stalls"),
+    ],
+    "Groceries": [
+        ("Online & Quick Commerce", "Blinkit, Zepto, Swiggy Instamart, BigBasket, JioMart"),
+        ("Supermarkets & Kirana", "DMart, Reliance Fresh, More, local provision stores"),
+        ("Milk & Daily Needs", "Milk, vegetables, fruits, daily essentials"),
+    ],
+    "Shopping": [
+        ("Online Shopping", "Amazon, Flipkart, Meesho and other marketplaces"),
+        ("Clothing & Footwear", "Myntra, Ajio, textiles, garments, footwear"),
+        ("Electronics & Gadgets", "Croma, Reliance Digital, mobiles, gadgets"),
+        ("Home & Furniture", "IKEA, furniture, home goods, kitchenware"),
+    ],
+    "Transport": [
+        ("Cabs & Autos", "Uber, Ola, Rapido, autos, taxis"),
+        ("Public Transport", "Metro, bus, local train"),
+        ("Vehicle Upkeep", "Servicing, repairs, tyres, washing, vehicle accessories"),
+        ("Parking & Tolls", "Parking, FASTag, tolls"),
+    ],
+    "Bills & Utilities": [
+        ("Electricity", "Electricity board bills (TANGEDCO, BESCOM...)"),
+        ("Mobile & Internet", "Mobile recharges, postpaid, broadband"),
+        ("Gas & Water", "Cooking gas, piped gas, water"),
+        ("DTH & Cable", "Tata Play, Dish TV, Sun Direct, cable"),
+    ],
+    "Health": [
+        ("Pharmacy", "Medicines: pharmacies, 1mg, PharmEasy, MedPlus"),
+        ("Doctor & Hospital", "Consultations, hospitals, clinics, dental"),
+        ("Diagnostics", "Labs, scans, tests"),
+    ],
+    "Entertainment & Subscriptions": [
+        ("OTT & Music", "Netflix, Hotstar, Prime Video, Spotify, YouTube Premium"),
+        ("Movies & Events", "BookMyShow, PVR, INOX, concerts, events"),
+        ("Apps & Games", "App stores, in-app purchases, games, software subscriptions"),
+    ],
+    "Travel": [
+        ("Flights", "IndiGo, Air India, Akasa and other airlines"),
+        ("Trains & Buses", "IRCTC, redBus, long-distance buses"),
+        ("Hotels & Stays", "OYO, Airbnb, hotels, lodges"),
+    ],
+    "Household & Services": [
+        ("Domestic Help", "Maid, cook, driver, caretaker"),
+        ("Repairs & Services", "Urban Company, plumber, electrician, carpenter, cleaning"),
+        ("Laundry", "Laundry, dry cleaning, ironing"),
+    ],
+    "Personal Care": [
+        ("Salon & Grooming", "Salon, spa, beauty parlour, cosmetics"),
+        ("Fitness", "Gym, cult.fit, sports, yoga"),
+    ],
+    "Investments": [
+        ("Mutual Funds & SIPs", "Mutual fund SIPs and purchases (ICCL, CAMS, KFintech)"),
+        ("Stocks", "Shares via brokers (Zerodha, Upstox)"),
+        ("Deposits & Schemes", "FD, RD, PPF, NPS, gold schemes"),
+    ],
+}
+
+# Needs / wants / savings grouping for the 50-30-20 view. Sub-categories inherit their parent's group.
+CATEGORY_GROUPS: dict[str, list[str]] = {
+    "needs": ["Groceries", "Rent", "Bills & Utilities", "Health", "Insurance", "EMI & Loans", "Education",
+              "Transport", "Fuel", "Household & Services", "Taxes", "Bank Charges"],
+    "wants": ["Food & Dining", "Shopping", "Entertainment & Subscriptions", "Travel", "Personal Care",
+              "Gifts & Donations", "Payments to People", "Cash Withdrawal", "Other", UNCATEGORIZED],
+    "savings": ["Investments"],
+    "income": ["Salary", "Interest", "Refunds & Cashback", "Other Income"],
+    "transfer": ["Self Transfer", "Credit Card Payment"],
+}
+
+# Money plan: one call, so use a stronger model than the categorizer.
+PLAN_MODEL = os.getenv("EXPENSE_TRACKER_PLAN_MODEL", "claude-opus-5-5")
+
 # ── Local (offline) categorizer ───────────────────────────────────────────────
 # Business-type words common in Indian payee names and UPI remarks. The local
 # categorizer treats each word as weak evidence for a category; your own
@@ -101,18 +176,42 @@ SEED_RULES: list[tuple[str, str | None, list[str]]] = [
     ("Bank Charges", "debit", ["CHARGES", "CHRGS", "CHGS", "SMS CHG", "ANNUAL FEE", "MIN BAL", "CONSOLIDATED CHARGES", "DEBIT CARD FEE"]),
     ("Cash Withdrawal", "debit", ["ATW", "NWD", "EAW", "ATM WDL", "ATM CASH", "CASH WDL", "CASH WITHDRAWAL", "ATM WITHDRAWAL"]),
     ("Taxes", "debit", ["INCOME TAX", "CBDT", "TIN NSDL", "ADVANCE TAX", "PROPERTY TAX", "GST PAYMENT"]),
-    ("Investments", None, ["ZERODHA", "GROWW", "NEXTBILLION", "KUVERA", "UPSTOX", "ICCL", "INDIAN CLEARING", "MUTUAL FUND", "MUTUALFUND", "SIP", "NPS TRUST", "PPF", "CAMS", "KFINTECH", "SMALLCASE", "ETMONEY", "PAYTM MONEY", "BSE LIMITED"]),
+    ("Mutual Funds & SIPs", None, ["ICCL", "INDIAN CLEARING", "MUTUAL FUND", "MUTUALFUND", "SIP", "CAMS", "KFINTECH", "KUVERA", "ETMONEY", "PAYTM MONEY"]),
+    ("Deposits & Schemes", None, ["NPS TRUST", "PPF"]),
+    ("Investments", None, ["ZERODHA", "GROWW", "NEXTBILLION", "UPSTOX", "SMALLCASE", "BSE LIMITED"]),
     ("Insurance", "debit", ["LIC", "LICI", "LIFE INSURANCE", "INSURANCE", "POLICYBAZAAR", "STAR HEALTH", "HDFC ERGO", "ICICI LOMBARD", "ACKO", "GO DIGIT"]),
     ("EMI & Loans", "debit", ["EMI", "LOAN", "BAJAJ FINANCE", "BAJAJ FIN", "HOME CREDIT"]),
-    ("Groceries", "debit", ["INSTAMART", "BIGBASKET", "BLINKIT", "GROFERS", "ZEPTO", "DMART", "AVENUE SUPERMARTS", "JIOMART", "MORE RETAIL", "SPENCERS", "RELIANCE FRESH", "RELIANCE SMART", "NATURES BASKET", "COUNTRY DELIGHT", "MILKBASKET", "SUPERMARKET"]),
-    ("Food & Dining", "debit", ["SWIGGY", "ZOMATO", "DOMINOS", "MCDONALDS", "KFC", "STARBUCKS", "PIZZA HUT", "BURGER KING", "EATCLUB", "BOX8", "FAASOS", "HALDIRAM", "ADYAR ANANDA BHAVAN", "SARAVANA BHAVAN", "RESTAURANT", "CAFE", "BAKERY", "HOTEL"]),
+    ("Online & Quick Commerce", "debit", ["INSTAMART", "BIGBASKET", "BLINKIT", "GROFERS", "ZEPTO", "JIOMART"]),
+    ("Supermarkets & Kirana", "debit", ["DMART", "AVENUE SUPERMARTS", "MORE RETAIL", "SPENCERS", "RELIANCE FRESH", "RELIANCE SMART", "NATURES BASKET", "SUPERMARKET"]),
+    ("Milk & Daily Needs", "debit", ["COUNTRY DELIGHT", "MILKBASKET"]),
+    ("Food Delivery", "debit", ["SWIGGY", "ZOMATO", "EATCLUB", "BOX8", "FAASOS"]),
+    ("Restaurants & Cafes", "debit", ["DOMINOS", "MCDONALDS", "KFC", "STARBUCKS", "PIZZA HUT", "BURGER KING", "HALDIRAM", "ADYAR ANANDA BHAVAN", "SARAVANA BHAVAN", "RESTAURANT", "CAFE", "BAKERY", "HOTEL"]),
     ("Fuel", "debit", ["IOCL", "INDIAN OIL", "HPCL", "HINDUSTAN PETROLEUM", "BPCL", "BHARAT PETROLEUM", "SHELL", "NAYARA", "PETROL", "FUEL", "FILLING STATION"]),
-    ("Transport", "debit", ["UBER", "OLA", "OLACABS", "ANI TECHNOLOGIES", "RAPIDO", "ROPPEN", "NAMMA YATRI", "BLUSMART", "METRO RAIL", "CMRL", "BMRCL", "DMRC", "FASTAG", "PARKING", "TOLL"]),
-    ("Travel", "debit", ["IRCTC", "MAKEMYTRIP", "GOIBIBO", "CLEARTRIP", "YATRA", "REDBUS", "IXIGO", "INDIGO", "INTERGLOBE", "AIR INDIA", "AKASA", "SPICEJET", "VISTARA", "OYO", "AIRBNB", "BOOKING.COM", "AGODA"]),
-    ("Bills & Utilities", "debit", ["BBPS", "TANGEDCO", "TNEB", "TNPDCL", "BESCOM", "MSEDCL", "ELECTRICITY", "AIRTEL", "JIO", "RELIANCE JIO", "VODAFONE", "BSNL", "ACT FIBERNET", "HATHWAY", "TATA PLAY", "TATASKY", "DISH TV", "SUN DIRECT", "INDANE", "BHARATGAS", "HP GAS", "WATER BOARD", "METROWATER", "RECHARGE"]),
-    ("Health", "debit", ["APOLLO", "PHARMEASY", "1MG", "NETMEDS", "MEDPLUS", "HOSPITAL", "CLINIC", "PHARMACY", "MEDICAL", "DIAGNOSTIC", "PHARMA"]),
-    ("Entertainment & Subscriptions", "debit", ["NETFLIX", "SPOTIFY", "HOTSTAR", "DISNEY", "AMAZON PRIME", "PRIMEVIDEO", "PRIME VIDEO", "YOUTUBE", "BOOKMYSHOW", "PVR", "INOX", "GOOGLE PLAY", "GOOGLEPLAY", "APPLE MEDIA", "APPLE.COM", "APPLE SERVICES", "SONYLIV", "ZEE5", "JIOCINEMA", "JIOHOTSTAR"]),
-    ("Shopping", "debit", ["AMAZON", "FLIPKART", "MYNTRA", "AJIO", "MEESHO", "CROMA", "RELIANCE DIGITAL", "DECATHLON", "IKEA", "TATA CLIQ", "LENSKART", "FIRSTCRY", "NYKAA"]),
-    ("Personal Care", "debit", ["SALON", "SPA", "CULTFIT", "CULT.FIT", "CUREFIT", "GYM", "GREEN TRENDS", "NATURALS SALON"]),
+    ("Cabs & Autos", "debit", ["UBER", "OLA", "OLACABS", "ANI TECHNOLOGIES", "RAPIDO", "ROPPEN", "NAMMA YATRI", "BLUSMART"]),
+    ("Public Transport", "debit", ["METRO RAIL", "CMRL", "BMRCL", "DMRC"]),
+    ("Parking & Tolls", "debit", ["FASTAG", "PARKING", "TOLL"]),
+    ("Flights", "debit", ["INDIGO", "INTERGLOBE", "AIR INDIA", "AKASA", "SPICEJET", "VISTARA"]),
+    ("Trains & Buses", "debit", ["IRCTC", "REDBUS"]),
+    ("Hotels & Stays", "debit", ["OYO", "AIRBNB", "BOOKING.COM", "AGODA"]),
+    ("Travel", "debit", ["MAKEMYTRIP", "GOIBIBO", "CLEARTRIP", "YATRA", "IXIGO"]),
+    ("Electricity", "debit", ["TANGEDCO", "TNEB", "TNPDCL", "BESCOM", "MSEDCL", "ELECTRICITY"]),
+    ("Mobile & Internet", "debit", ["AIRTEL", "JIO", "RELIANCE JIO", "VODAFONE", "BSNL", "ACT FIBERNET", "HATHWAY", "RECHARGE"]),
+    ("DTH & Cable", "debit", ["TATA PLAY", "TATASKY", "DISH TV", "SUN DIRECT"]),
+    ("Gas & Water", "debit", ["INDANE", "BHARATGAS", "HP GAS", "WATER BOARD", "METROWATER"]),
+    ("Bills & Utilities", "debit", ["BBPS"]),
+    ("Pharmacy", "debit", ["PHARMEASY", "1MG", "NETMEDS", "MEDPLUS", "PHARMACY", "MEDICAL", "PHARMA"]),
+    ("Diagnostics", "debit", ["DIAGNOSTIC"]),
+    ("Doctor & Hospital", "debit", ["HOSPITAL", "CLINIC"]),
+    ("Health", "debit", ["APOLLO"]),
+    ("OTT & Music", "debit", ["NETFLIX", "SPOTIFY", "HOTSTAR", "DISNEY", "AMAZON PRIME", "PRIMEVIDEO", "PRIME VIDEO", "YOUTUBE", "SONYLIV", "ZEE5", "JIOCINEMA", "JIOHOTSTAR"]),
+    ("Movies & Events", "debit", ["BOOKMYSHOW", "PVR", "INOX"]),
+    ("Apps & Games", "debit", ["GOOGLE PLAY", "GOOGLEPLAY", "APPLE MEDIA", "APPLE.COM", "APPLE SERVICES"]),
+    ("Clothing & Footwear", "debit", ["MYNTRA", "AJIO"]),
+    ("Electronics & Gadgets", "debit", ["CROMA", "RELIANCE DIGITAL"]),
+    ("Home & Furniture", "debit", ["IKEA"]),
+    ("Online Shopping", "debit", ["AMAZON", "FLIPKART", "MEESHO", "TATA CLIQ", "FIRSTCRY", "NYKAA"]),
+    ("Shopping", "debit", ["DECATHLON", "LENSKART"]),
+    ("Salon & Grooming", "debit", ["SALON", "SPA", "GREEN TRENDS", "NATURALS SALON"]),
+    ("Fitness", "debit", ["CULTFIT", "CULT.FIT", "CUREFIT", "GYM"]),
     ("Education", "debit", ["SCHOOL", "COLLEGE", "UNIVERSITY", "UDEMY", "COURSERA", "BYJU", "UNACADEMY"]),
 ]

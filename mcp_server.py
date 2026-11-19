@@ -29,7 +29,7 @@ from datetime import date
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
-from tracker import db, service
+from tracker import advisor, db, insights, service
 
 READ_ONLY = ToolAnnotations(read_only_hint=True)
 
@@ -161,6 +161,29 @@ def add_rule(pattern: str, category: str, match_type: str = "contains", directio
     """
     out = service.create_rule(pattern, category, match_type, direction)
     return {"rule_id": out["rule"]["id"], "matched_transactions": out["matched_transactions"]}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def spending_overview(period: str = "month", month: str | None = None) -> dict:
+    """Savings rate, needs/wants split, change vs usual per category, recurring commitments and key facts.
+
+    Args:
+        period: "month", "3m" (3 months ending at `month`), "fy" (Indian financial year) or "12m".
+        month: "yyyy-mm"; defaults to the latest month with data.
+    """
+    o = insights.overview(period, month)
+    keep = ("period", "income", "spent", "needs", "wants", "invested", "saved", "savings_rate", "daily_average",
+            "projected_spend", "recurring_monthly", "recurring_share_of_income", "facts", "unusual")
+    out = {k: o[k] for k in keep}
+    out["categories"] = [{k: c[k] for k in ("name", "group", "amount", "usual", "change_pct", "budget", "children")} for c in o["categories"]]
+    out["recurring"] = [{k: r[k] for k in ("payee", "category", "monthly", "active")} for r in o["recurring"]]
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+def money_plan() -> dict:
+    """The latest money plan (summary, actions, suggested budgets). Create one in the web app's Plan tab."""
+    return advisor.latest_plan() or {"message": "No plan yet. Create one in the app's Plan tab."}
 
 
 @mcp.tool(annotations=READ_ONLY)

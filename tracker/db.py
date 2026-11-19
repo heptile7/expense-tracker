@@ -8,7 +8,7 @@ from pathlib import Path
 
 import config
 
-SCHEMA_VERSION = 2  # 2: 'local' category_source, app_settings
+SCHEMA_VERSION = 3  # 2: 'local' category_source, app_settings; 3: sub-categories, groups, budgets, plans
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
@@ -29,7 +29,22 @@ CREATE TABLE IF NOT EXISTS categories (
     color        TEXT,
     description  TEXT,
     is_active    INTEGER NOT NULL DEFAULT 1,
-    is_system    INTEGER NOT NULL DEFAULT 0
+    is_system    INTEGER NOT NULL DEFAULT 0,
+    parent_id    INTEGER REFERENCES categories(id) ON DELETE SET NULL,  -- sub-category of
+    grp          TEXT                                 -- needs | wants | savings | income | transfer
+);
+
+CREATE TABLE IF NOT EXISTS budgets (
+    category_id   INTEGER PRIMARY KEY REFERENCES categories(id) ON DELETE CASCADE,
+    monthly_paise INTEGER NOT NULL CHECK (monthly_paise >= 0),
+    updated_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS money_plans (
+    id           INTEGER PRIMARY KEY,
+    created_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    backend      TEXT,
+    plan_json    TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS statements (
@@ -168,8 +183,19 @@ def init_db() -> None:
 def _migrate(conn: sqlite3.Connection) -> None:
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     has_txns = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'transactions'").fetchone()
-    if not has_txns or version >= 2:
+    if not has_txns:
         return
+    if version < 2:
+        _migrate_v2(conn)
+    # v2 -> v3: sub-categories and needs/wants/savings groups are plain new columns.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(categories)")}
+    for col, ddl in (("parent_id", "INTEGER REFERENCES categories(id) ON DELETE SET NULL"), ("grp", "TEXT")):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE categories ADD COLUMN {col} {ddl}")
+    conn.commit()
+
+
+def _migrate_v2(conn: sqlite3.Connection) -> None:
     # v1 -> v2: widen the category_source CHECK. SQLite can't alter a CHECK, so rebuild the table
     # (create new, copy, drop old, rename), as the SQLite docs prescribe.
     ddl = re.search(r"CREATE TABLE IF NOT EXISTS transactions \(.*?\n\);", SCHEMA, re.DOTALL).group(0)
@@ -189,6 +215,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         raise
     finally:
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.isolation_level = ""
 
 
 def get_setting(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:
@@ -215,8 +242,36 @@ def _seed(conn: sqlite3.Connection) -> None:
             "INSERT INTO categories (name, kind, color, description, is_system) VALUES (?, ?, ?, ?, ?)",
             [(n, k, c, d, 1 if n == config.UNCATEGORIZED else 0) for n, k, c, d in config.DEFAULT_CATEGORIES],
         )
-    has_seeds = conn.execute("SELECT COUNT(*) FROM merchant_rules WHERE source = 'seed'").fetchone()[0]
-    if not has_seeds:
+    # Sub-categories (added once; you can rename, hide or delete them afterwards).
+    if get_setting(conn, "seeded:subcategories") != "1":
+        ids = {r["name"]: r for r in conn.execute("SELECT id, name, kind, color FROM categories")}
+        for parent, subs in config.SUBCATEGORIES.items():
+            p = ids.get(parent)
+            if not p:
+                continue
+            for name, desc in subs:
+                if name not in ids:
+                    conn.execute(
+                        "INSERT INTO categories (name, kind, color, description, parent_id) VALUES (?, ?, ?, ?, ?)",
+                        (name, p["kind"], p["color"], desc, p["id"]),
+                    )
+        set_setting(conn, "seeded:subcategories", "1")
+
+    # Needs / wants / savings groups for anything that has none yet.
+    for grp, names in config.CATEGORY_GROUPS.items():
+        conn.executemany("UPDATE categories SET grp = ? WHERE name = ? AND grp IS NULL AND parent_id IS NULL", [(grp, n) for n in names])
+    conn.execute(
+        "UPDATE categories SET grp = (SELECT p.grp FROM categories p WHERE p.id = categories.parent_id) "
+        "WHERE grp IS NULL AND parent_id IS NOT NULL"
+    )
+    conn.execute(
+        "UPDATE categories SET grp = CASE kind WHEN 'income' THEN 'income' WHEN 'transfer' THEN 'transfer' ELSE 'wants' END "
+        "WHERE grp IS NULL"
+    )
+
+    # Built-in keyword rules. Version 2 points them at sub-categories; replace older versions.
+    if get_setting(conn, "seeded:rules") != "2":
+        conn.execute("DELETE FROM merchant_rules WHERE source = 'seed'")
         ids = {r["name"]: r["id"] for r in conn.execute("SELECT id, name FROM categories")}
         rows = []
         for category, direction, keywords in config.SEED_RULES:
@@ -229,6 +284,18 @@ def _seed(conn: sqlite3.Connection) -> None:
             "VALUES (?, ?, ?, ?, ?)",
             rows,
         )
+        set_setting(conn, "seeded:rules", "2")
+
+
+def category_tree(conn: sqlite3.Connection) -> dict[int, dict]:
+    """id -> {name, kind, grp, parent_id, top_id, top_name}: every category with its top-level parent."""
+    rows = {r["id"]: dict(r) for r in conn.execute("SELECT id, name, kind, grp, parent_id, color FROM categories")}
+    for r in rows.values():
+        top = rows.get(r["parent_id"]) if r["parent_id"] else None
+        r["top_id"] = top["id"] if top else r["id"]
+        r["top_name"] = top["name"] if top else r["name"]
+        r["grp"] = r["grp"] or (top["grp"] if top else None)
+    return rows
 
 
 def category_id_by_name(conn: sqlite3.Connection, name: str) -> int | None:

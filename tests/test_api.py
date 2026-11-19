@@ -35,7 +35,7 @@ def test_import_correct_and_learn_over_http(client, tmp_path):
 
     assert _upload(client, april).json()["duplicate_file"]
     # A re-export of the same period is a different file, but its rows are already there.
-    reexport = _upload(client, hdfc_xlsx(tmp_path / "apr_again.xlsx", MONTH1)).json()
+    reexport = _upload(client, hdfc_xlsx(tmp_path / "apr_again.xlsx", MONTH1, account_no="XXXXXXXXXX1234")).json()
     assert reexport["n_new"] == 0 and reexport["n_duplicates"] == len(MONTH1)
 
     txns = client.get("/api/transactions", params={"q": "RAMESH"}).json()["items"]

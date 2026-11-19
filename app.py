@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 import config
-from tracker import db, service
+from tracker import advisor, db, insights, service
 from tracker.fetch import gmail, netbanking, secrets
 from tracker.importer import NeedsAccount
 from tracker.parsers import SUPPORTED, PasswordRequired, StatementError
@@ -51,7 +51,10 @@ async def _bad_request(_: Request, exc: ValueError):
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
-    return templates.TemplateResponse(request, "index.html", {"model": config.MODEL_ID})
+    # Version stamp so the browser fetches app.js/style.css again whenever they change.
+    static = config.BASE_DIR / "static"
+    version = int(max((static / f).stat().st_mtime for f in ("app.js", "style.css")))
+    return templates.TemplateResponse(request, "index.html", {"model": config.MODEL_ID, "v": version})
 
 
 @app.get("/api/meta")
@@ -69,6 +72,40 @@ def meta():
 @app.get("/api/dashboard")
 def dashboard(month: str | None = None, account_id: int | None = None):
     return service.dashboard(month, account_id)
+
+
+@app.get("/api/overview")
+def overview(period: str = "month", month: str | None = None, account_id: int | None = None):
+    return insights.overview(period, month, account_id)
+
+
+# ── Money plan & budgets ─────────────────────────────────────────────────────
+
+
+@app.get("/api/plan")
+def get_plan():
+    return advisor.latest_plan() or {}
+
+
+@app.post("/api/plan")
+def create_plan(body: dict = Body(default={})):
+    return advisor.create_plan(use_claude=bool(body.get("use_claude", True)))
+
+
+@app.post("/api/plan/{plan_id}/apply-budgets")
+def apply_plan_budgets(plan_id: int):
+    return {"applied": advisor.apply_budgets(plan_id)}
+
+
+@app.get("/api/budgets")
+def budgets():
+    return service.list_budgets()
+
+
+@app.put("/api/budgets/{category_id}")
+def set_budget(category_id: int, body: dict = Body(...)):
+    value = body.get("monthly")
+    return service.set_budget(category_id, float(value) if value not in (None, "") else None)
 
 
 # ── Transactions ──────────────────────────────────────────────────────────────
@@ -208,7 +245,9 @@ def categories():
 
 @app.post("/api/categories")
 def create_category(body: dict = Body(...)):
-    return service.create_category(body.get("name", ""), body.get("kind", "expense"), None, body.get("description"))
+    parent = body.get("parent_id")
+    return service.create_category(body.get("name", ""), body.get("kind", "expense"), None, body.get("description"),
+                                   int(parent) if parent else None, body.get("grp") or None)
 
 
 @app.patch("/api/categories/{category_id}")

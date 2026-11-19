@@ -117,7 +117,19 @@ class CategorizeStats:
 
 
 def _active_categories(conn: sqlite3.Connection) -> list[dict]:
-    return [dict(r) for r in conn.execute("SELECT id, name, kind, description FROM categories WHERE is_active = 1 ORDER BY kind, name")]
+    rows = conn.execute(
+        """SELECT c.id, c.name, c.kind, c.description, p.name AS parent
+           FROM categories c LEFT JOIN categories p ON p.id = c.parent_id
+           WHERE c.is_active = 1
+           ORDER BY c.kind, COALESCE(p.name, c.name), c.parent_id IS NOT NULL, c.name"""
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        if d.pop("parent"):
+            d["description"] = f"sub-category of {r['parent']}: {d['description'] or ''}"
+        out.append(d)
+    return out
 
 
 def _few_shot_examples(conn: sqlite3.Connection) -> list[tuple[str, str]]:

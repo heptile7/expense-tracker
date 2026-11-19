@@ -24,7 +24,7 @@ def test_seed_rules_categorize_known_merchants_without_claude(tmp_path, fake_llm
     import_file(hdfc_xlsx(tmp_path / "apr.xlsx", MONTH1), classifier=fake_llm)
     swiggy = _by_counterparty("Swiggy")
     assert len(swiggy) == 2
-    assert all(t["category"] == "Food & Dining" and t["category_source"] == "seed" for t in swiggy)
+    assert all(t["category"] == "Food Delivery" and t["category_source"] == "seed" for t in swiggy)  # sub-category of Food & Dining
     atm = _by_counterparty("ATM withdrawal")[0]
     assert atm["category"] == "Cash Withdrawal"
     assert "SWIGGY" not in fake_llm.payees_seen  # seeds never reach the model
@@ -162,10 +162,10 @@ def test_merge_and_rename_categories(tmp_path, fake_llm):
     _account()
     import_file(hdfc_xlsx(tmp_path / "apr.xlsx", MONTH1), classifier=fake_llm)
     with db.session() as conn:
-        food = db.category_id_by_name(conn, "Food & Dining")
+        food = db.category_id_by_name(conn, "Food Delivery")
         groceries = db.category_id_by_name(conn, "Groceries")
-    service.update_category(food, name="Eating Out")
-    assert _by_counterparty("Swiggy")[0]["category"] == "Eating Out"
+    service.update_category(food, name="Ordering In")
+    assert _by_counterparty("Swiggy")[0]["category"] == "Ordering In"
     res = service.merge_categories(food, groceries)
     assert res["moved_transactions"] == 2
     assert _by_counterparty("Swiggy")[0]["category"] == "Groceries"

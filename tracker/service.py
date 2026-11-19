@@ -38,18 +38,26 @@ def _resolve_category(conn: sqlite3.Connection, category: int | str) -> int:
 # ── Categories ────────────────────────────────────────────────────────────────
 
 
+GROUPS = ("needs", "wants", "savings", "income", "transfer")
+
+
 def list_categories(include_inactive: bool = False) -> list[dict]:
+    """Main categories, each followed by its sub-categories."""
     with db.session() as conn:
         rows = conn.execute(
-            f"""SELECT c.*, COUNT(t.id) AS txn_count FROM categories c
+            f"""SELECT c.*, p.name AS parent_name, COUNT(t.id) AS txn_count FROM categories c
+                LEFT JOIN categories p ON p.id = c.parent_id
                 LEFT JOIN transactions t ON t.category_id = c.id
                 {"" if include_inactive else "WHERE c.is_active = 1"}
-                GROUP BY c.id ORDER BY CASE c.kind WHEN 'expense' THEN 0 WHEN 'income' THEN 1 ELSE 2 END, c.name"""
+                GROUP BY c.id
+                ORDER BY CASE c.kind WHEN 'expense' THEN 0 WHEN 'income' THEN 1 ELSE 2 END,
+                         COALESCE(p.name, c.name), c.parent_id IS NOT NULL, c.name"""
         ).fetchall()
         return [dict(r) for r in rows]
 
 
-def create_category(name: str, kind: str = "expense", color: str | None = None, description: str | None = None) -> dict:
+def create_category(name: str, kind: str = "expense", color: str | None = None, description: str | None = None,
+                    parent_id: int | None = None, grp: str | None = None) -> dict:
     name = name.strip()
     if not name:
         raise ValueError("Category name is required")
@@ -58,15 +66,39 @@ def create_category(name: str, kind: str = "expense", color: str | None = None, 
     with db.session() as conn:
         if db.category_id_by_name(conn, name):
             raise ValueError(f"Category {name!r} already exists")
+        parent = _check_parent(conn, None, parent_id) if parent_id else None
+        if parent:
+            kind, color, grp = parent["kind"], color or parent["color"], parent["grp"]
+        grp = grp or {"income": "income", "transfer": "transfer"}.get(kind, "wants")
+        if grp not in GROUPS:
+            raise ValueError(f"group must be one of {', '.join(GROUPS)}")
         cur = conn.execute(
-            "INSERT INTO categories (name, kind, color, description) VALUES (?, ?, ?, ?)",
-            (name, kind, color or "#868e96", description),
+            "INSERT INTO categories (name, kind, color, description, parent_id, grp) VALUES (?, ?, ?, ?, ?, ?)",
+            (name, kind, color or "#868e96", description, parent_id or None, grp),
         )
         return _row(conn.execute("SELECT * FROM categories WHERE id = ?", (cur.lastrowid,)).fetchone())
 
 
+def _check_parent(conn: sqlite3.Connection, category_id: int | None, parent_id: int) -> sqlite3.Row:
+    parent = conn.execute("SELECT * FROM categories WHERE id = ?", (parent_id,)).fetchone()
+    if not parent:
+        raise NotFound(f"Category {parent_id} not found")
+    if parent["parent_id"]:
+        raise ValueError("Sub-categories can't have sub-categories of their own")
+    if category_id is not None:
+        if parent_id == category_id:
+            raise ValueError("A category can't be its own parent")
+        if conn.execute("SELECT 1 FROM categories WHERE parent_id = ?", (category_id,)).fetchone():
+            raise ValueError("This category has sub-categories, so it can't become one")
+    return parent
+
+
 def update_category(category_id: int, **fields) -> dict:
-    allowed = {k: v for k, v in fields.items() if k in {"name", "kind", "color", "description", "is_active"} and v is not None}
+    allowed = {k: v for k, v in fields.items() if k in {"name", "kind", "color", "description", "is_active", "grp"} and v is not None}
+    if "parent_id" in fields:  # None/"" makes it a main category again
+        allowed["parent_id"] = int(fields["parent_id"]) if fields["parent_id"] not in (None, "", 0) else None
+    if "grp" in allowed and allowed["grp"] not in GROUPS:
+        raise ValueError(f"group must be one of {', '.join(GROUPS)}")
     with db.session() as conn:
         row = conn.execute("SELECT * FROM categories WHERE id = ?", (category_id,)).fetchone()
         if not row:
@@ -82,10 +114,47 @@ def update_category(category_id: int, **fields) -> dict:
                 raise ValueError(f"Category {allowed['name']!r} already exists. Use merge instead.")
         if "is_active" in allowed:
             allowed["is_active"] = int(bool(allowed["is_active"]))
+        if allowed.get("parent_id"):
+            parent = _check_parent(conn, category_id, allowed["parent_id"])
+            allowed["kind"], allowed["grp"] = parent["kind"], parent["grp"]
         if allowed:
             sets = ", ".join(f"{k} = ?" for k in allowed)
             conn.execute(f"UPDATE categories SET {sets} WHERE id = ?", (*allowed.values(), category_id))
+        if "grp" in allowed and not row["parent_id"]:  # sub-categories follow their parent's group
+            conn.execute("UPDATE categories SET grp = ? WHERE parent_id = ?", (allowed["grp"], category_id))
         return _row(conn.execute("SELECT * FROM categories WHERE id = ?", (category_id,)).fetchone())
+
+
+# ── Budgets ───────────────────────────────────────────────────────────────────
+
+
+def list_budgets() -> list[dict]:
+    with db.session() as conn:
+        rows = conn.execute(
+            """SELECT b.category_id, c.name, b.monthly_paise, b.updated_at FROM budgets b
+               JOIN categories c ON c.id = b.category_id ORDER BY c.name"""
+        ).fetchall()
+    return [{"category_id": r["category_id"], "category": r["name"], "monthly": rupees(r["monthly_paise"]), "updated_at": r["updated_at"]} for r in rows]
+
+
+def set_budget(category: int | str, monthly: float | None) -> dict:
+    """Monthly budget for a main category (covers its sub-categories). None or 0 removes it."""
+    with db.session() as conn:
+        cid = _resolve_category(conn, category)
+        cat = conn.execute("SELECT name, parent_id FROM categories WHERE id = ?", (cid,)).fetchone()
+        if cat["parent_id"]:
+            raise ValueError("Set budgets on main categories; they cover their sub-categories")
+        if not monthly:
+            conn.execute("DELETE FROM budgets WHERE category_id = ?", (cid,))
+            return {"category": cat["name"], "monthly": None}
+        if monthly < 0:
+            raise ValueError("A budget can't be negative")
+        conn.execute(
+            """INSERT INTO budgets (category_id, monthly_paise) VALUES (?, ?)
+               ON CONFLICT (category_id) DO UPDATE SET monthly_paise = excluded.monthly_paise, updated_at = CURRENT_TIMESTAMP""",
+            (cid, int(round(monthly * 100))),
+        )
+        return {"category": cat["name"], "monthly": round(float(monthly), 2)}
 
 
 def merge_categories(source_id: int, target_id: int) -> dict:
@@ -221,12 +290,12 @@ def _filters(f: dict) -> tuple[str, list]:
     if f.get("end_date"):
         where.append("t.txn_date <= ?")
         params.append(f["end_date"])
-    if f.get("category_id"):
-        where.append("t.category_id = ?")
-        params.append(int(f["category_id"]))
+    if f.get("category_id"):  # a main category includes its sub-categories
+        where.append("(t.category_id = ? OR t.category_id IN (SELECT id FROM categories WHERE parent_id = ?))")
+        params += [int(f["category_id"]), int(f["category_id"])]
     if f.get("category"):
-        where.append("lower(c.name) = lower(?)")
-        params.append(f["category"])
+        where.append("(lower(c.name) = lower(?) OR c.parent_id IN (SELECT id FROM categories WHERE lower(name) = lower(?)))")
+        params += [f["category"], f["category"]]
     if f.get("source"):
         where.append("t.category_source = ?")
         params.append(f["source"])
@@ -371,7 +440,12 @@ def accept_categories(txn_ids: list[int]) -> dict:
 def recategorize(scope: str = "uncategorized", classifier: Classifier | None = None) -> dict:
     """scope='uncategorized': retry Claude for Uncategorized rows and offline guesses. scope='all': re-apply rules everywhere."""
     with db.session() as conn:
-        if scope == "uncategorized":
+        if scope == "refine":
+            # Forget Claude's earlier (coarser) answers so every payee not covered by your own rules
+            # is asked again against the current categories and sub-categories.
+            conn.execute("DELETE FROM merchant_rules WHERE source = 'llm'")
+            stats = categorize(conn, None, classifier=classifier, use_llm=True)
+        elif scope == "uncategorized":
             ids = [r["id"] for r in conn.execute("SELECT id FROM transactions WHERE category_source IN ('fallback', 'local')")]
             stats = categorize(conn, ids, classifier=classifier, use_llm=True)
         else:
@@ -482,13 +556,14 @@ def spending_summary(start_date: str | None = None, end_date: str | None = None,
                      account_id: int | None = None, kind: str | None = None) -> list[dict]:
     """Totals in rupees. Expense rows are net of refunds booked to the same category; transfers are excluded."""
     group_expr = {
-        "category": "c.name",
+        "category": "COALESCE(p.name, c.name)",  # sub-categories roll up into their main category
+        "subcategory": "c.name",
         "merchant": "t.counterparty",
         "month": "substr(t.txn_date, 1, 7)",
         "account": "a.name",
     }.get(group_by)
     if not group_expr:
-        raise ValueError("group_by must be category, merchant, month or account")
+        raise ValueError("group_by must be category, subcategory, merchant, month or account")
     where = ["c.kind != 'transfer'"]
     params: list = []
     if start_date:
@@ -512,8 +587,9 @@ def spending_summary(start_date: str | None = None, end_date: str | None = None,
             f"""SELECT {group_expr} AS label, {kind_expr} AS kind,
                        SUM(CASE WHEN t.direction = 'debit' THEN t.amount_paise ELSE 0 END) AS debit,
                        SUM(CASE WHEN t.direction = 'credit' THEN t.amount_paise ELSE 0 END) AS credit,
-                       COUNT(*) AS n, MAX(c.color) AS color
+                       COUNT(*) AS n, MAX(COALESCE(p.color, c.color)) AS color
                 FROM transactions t JOIN categories c ON c.id = t.category_id JOIN accounts a ON a.id = t.account_id
+                LEFT JOIN categories p ON p.id = c.parent_id
                 WHERE {" AND ".join(where)}
                 GROUP BY {group_expr}, {kind_expr}""",
             params,

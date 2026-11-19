@@ -70,6 +70,8 @@ credit = money in) and the narration with numbers masked as '#'. Use them to wor
 merchant or person this is, then choose exactly one category from the list for every item.
 
 Guidance:
+- Pick the most specific sub-category that fits (e.g. "Food Delivery" rather than "Food & Dining"); use the
+  main category only when none of its sub-categories fit.
 - Well-known Indian merchants, apps and billers: use what you know about them (UPI IDs often name the merchant).
 - A debit to what looks like an individual's name with no other clue: "Payments to People".
 - A credit from an individual with no other clue: "Other Income".
@@ -392,6 +394,93 @@ def default_classifier(conn=None) -> Classifier | None:
     if conn is not None:
         mode = db.get_setting(conn, "categorizer", "auto")
     return build_classifier(mode)
+
+
+# ── One structured answer (used by the money plan) ────────────────────────────
+
+
+def structured_completion(system: str, user: str, schema: dict, model: str, mode: str = "auto",
+                          effort: str = "medium", timeout: int = 300) -> tuple[dict | None, str | None, list[str]]:
+    """Ask for one JSON answer matching `schema`, trying the API and then your subscription.
+
+    Returns (data, label of the backend that answered, errors from backends that didn't).
+    """
+    errors: list[str] = []
+    if mode == "api" or (mode == "auto" and api_key_set()):
+        data, err = _api_json(system, user, schema, model, effort)
+        if data is not None:
+            return data, HaikuClassifier.label, errors
+        errors.append(f"{HaikuClassifier.label}: {err}")
+    if mode == "claude_code" or (mode == "auto" and shutil.which("claude")):
+        data, err = _cli_json(system, user, schema, model, timeout)
+        if data is not None:
+            return data, ClaudeCodeClassifier.label, errors
+        errors.append(f"{ClaudeCodeClassifier.label}: {err}")
+    return None, None, errors
+
+
+def _api_json(system: str, user: str, schema: dict, model: str, effort: str) -> tuple[dict | None, str | None]:
+    try:
+        client = anthropic.Anthropic()
+        response = client.beta.messages.create(
+            model=model,
+            max_tokens=16000,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+            output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default",  # if this model's safeguards decline, the API retries on a suitable model
+        )
+    except anthropic.APIStatusError as exc:
+        msg = str(exc.message)
+        return None, "no API credits left" if "credit balance" in msg.lower() else f"error {exc.status_code}: {msg[:160]}"
+    except anthropic.APIConnectionError:
+        return None, "could not reach the API"
+    except (TypeError, anthropic.AnthropicError) as exc:
+        return None, NO_CREDENTIALS if "authentication" in str(exc).lower() else f"error: {str(exc)[:160]}"
+    if response.stop_reason == "refusal":
+        return None, "Claude declined to answer"
+    if response.stop_reason == "max_tokens":
+        return None, "the answer was cut off"
+    text = next((b.text for b in response.content if b.type == "text"), "")
+    try:
+        return json.loads(text), None
+    except json.JSONDecodeError:
+        return None, "unreadable answer"
+
+
+def _cli_json(system: str, user: str, schema: dict, model: str, timeout: int) -> tuple[dict | None, str | None]:
+    exe = shutil.which("claude")
+    if not exe:
+        return None, "Claude Code CLI not found"
+    cmd = [
+        exe, "-p", "--model", model, "--output-format", "json", "--json-schema", json.dumps(schema),
+        "--system-prompt", system, "--tools", "", "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence",
+    ]
+    try:
+        proc = subprocess.run(
+            cmd, input=user, capture_output=True, text=True, encoding="utf-8", timeout=timeout,
+            cwd=tempfile.gettempdir(), env=ClaudeCodeClassifier.environment(),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0,
+        )
+    except FileNotFoundError:
+        return None, "Claude Code CLI not found"
+    except subprocess.TimeoutExpired:
+        return None, f"no answer within {timeout}s"
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        lines = (proc.stderr or proc.stdout or "").strip().splitlines()
+        return None, (lines[-1][:200] if lines else f"exit code {proc.returncode}")
+    if data.get("is_error"):
+        return None, str(data.get("result") or data.get("subtype") or "error")[:200]
+    result = data.get("structured_output")
+    if result is None:
+        try:
+            result = json.loads(data.get("result") or "")
+        except json.JSONDecodeError:
+            return None, "unreadable answer"
+    return result, None
 
 
 _cli_status: tuple[float, dict] | None = None

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Expenses</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cpath d='M9 22h4v-6H9zm5 0h4V10h-4zm5 0h4v-9h-4z' fill='white'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v={{ v }}">
 </head>
 <body>
 <header class="topbar">
@@ -13,6 +13,7 @@
   <nav id="tabs" aria-label="Sections">
     <button data-tab="dashboard" class="active">Dashboard</button>
     <button data-tab="transactions">Transactions</button>
+    <button data-tab="plan">Plan</button>
     <button data-tab="review">Review <span id="review-badge" class="badge" hidden></span></button>
     <button data-tab="import">Import</button>
     <button data-tab="rules">Rules</button>
@@ -24,7 +25,13 @@
 <main>
   <!-- Dashboard -->
   <section id="tab-dashboard" class="tab active">
-    <div class="toolbar">
+    <div class="toolbar wrap">
+      <div class="seg" id="dash-period" role="tablist" aria-label="Period">
+        <button data-p="month" class="active">Month</button>
+        <button data-p="3m">3 months</button>
+        <button data-p="fy">Financial year</button>
+        <button data-p="12m">12 months</button>
+      </div>
       <select id="dash-month" aria-label="Month"></select>
       <select id="dash-account" aria-label="Account"><option value="">All accounts</option></select>
     </div>
@@ -35,13 +42,30 @@
     <div id="dash-body">
       <div class="tiles">
         <div class="tile hero"><div class="tile-label">Spent</div><div class="tile-value" id="t-spent"></div><div class="tile-sub" id="t-spent-sub"></div></div>
-        <div class="tile"><div class="tile-label">Income</div><div class="tile-value" id="t-income"></div></div>
-        <div class="tile"><div class="tile-label">Net</div><div class="tile-value" id="t-net"></div></div>
-        <div class="tile"><div class="tile-label">Transfers & investments</div><div class="tile-value" id="t-transfers"></div><div class="tile-sub">Not counted as spending</div></div>
+        <div class="tile"><div class="tile-label">Income</div><div class="tile-value" id="t-income"></div><div class="tile-sub" id="t-income-sub"></div></div>
+        <div class="tile"><div class="tile-label">Saved</div><div class="tile-value" id="t-saved"></div><div class="tile-sub" id="t-saved-sub"></div></div>
+        <div class="tile"><div class="tile-label">Invested</div><div class="tile-value" id="t-invested"></div><div class="tile-sub" id="t-invested-sub"></div></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Where your income went</h2><span class="hint">Reference point: 50% needs · 30% wants · 20% saved</span></div>
+        <div id="split-bar" class="segbar" role="img"></div>
+        <div id="split-legend" class="legend split-legend"></div>
+      </div>
+      <div class="card" id="facts-card">
+        <div class="card-head"><h2>What stands out</h2><button class="link" data-goto="plan">Get a money plan →</button></div>
+        <ul id="facts" class="facts"></ul>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Spending by category</h2><span class="hint" id="cat-hint">Click a category for its sub-categories. “Usual” is your average over the 3 months before.</span></div>
+        <div id="cat-table" class="cat-table"></div>
       </div>
       <div class="grid2">
-        <div class="card"><h2>Spending by category</h2><div id="chart-categories" class="hbars"></div></div>
-        <div class="card"><h2>Top merchants</h2><div id="chart-merchants" class="hbars"></div></div>
+        <div class="card"><div class="card-head"><h2>Regular commitments</h2><span class="hint" id="recurring-total"></span></div><div id="recurring"></div></div>
+        <div class="card"><h2>Top merchants</h2><div id="merchants"></div></div>
+      </div>
+      <div class="grid2">
+        <div class="card"><div class="card-head"><h2>Payments to people</h2><span class="hint" id="people-total"></span></div><div id="people"></div></div>
+        <div class="card"><h2>Unusually large payments</h2><div id="unusual"></div></div>
       </div>
       <div class="card">
         <div class="card-head"><h2>Last 12 months</h2>
@@ -49,6 +73,24 @@
         <div id="chart-trend" class="trend"></div>
       </div>
       <p class="footnote" id="dash-foot"></p>
+    </div>
+  </section>
+
+  <!-- Plan -->
+  <section id="tab-plan" class="tab">
+    <div class="card">
+      <div class="card-head"><h2>Your money plan</h2><span class="hint" id="plan-meta"></span></div>
+      <p class="hint">Built from your last 3 complete months. Claude sees monthly totals per category, your savings rate, regular commitments and the names of businesses you spend most with. It never sees people's names, individual transactions or account numbers.</p>
+      <div class="toolbar wrap">
+        <button class="primary" id="plan-create">Create my plan with Claude</button>
+        <button class="secondary" id="plan-offline">Offline plan (nothing sent)</button>
+      </div>
+      <div id="plan-body"></div>
+      <p class="hint" id="plan-disclaimer"></p>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Monthly budgets</h2><span class="hint">Budgets cover a main category and its sub-categories. Leave blank for none.</span></div>
+      <div class="table-wrap"><table class="plain"><thead><tr><th>Category</th><th>Group</th><th class="num">3-month average</th><th class="num">This month</th><th>Budget per month</th></tr></thead><tbody id="budget-body"></tbody></table></div>
     </div>
   </section>
 
@@ -198,6 +240,7 @@
       <h2>Add a category</h2>
       <form id="cat-form" class="form-row wrap">
         <input id="cf-name" placeholder="Name" required aria-label="Name">
+        <select id="cf-parent" aria-label="Sub-category of"><option value="">Main category</option></select>
         <select id="cf-kind" aria-label="Kind"><option value="expense">Expense</option><option value="income">Income</option><option value="transfer">Transfer (not counted)</option></select>
         <input id="cf-desc" class="grow" placeholder="Description: helps Claude pick it" aria-label="Description">
         <button class="primary">Add</button>
@@ -205,7 +248,7 @@
     </div>
     <div class="table-wrap">
       <table class="plain">
-        <thead><tr><th>Name</th><th>Kind</th><th>Description</th><th class="num">Transactions</th><th>Shown</th><th>Merge into</th></tr></thead>
+        <thead><tr><th>Name</th><th>Sub-category of</th><th>Kind</th><th>Group</th><th>Description</th><th class="num">Transactions</th><th>Shown</th><th>Merge into</th></tr></thead>
         <tbody id="cat-body"></tbody>
       </table>
     </div>
@@ -301,6 +344,6 @@
 
 <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v={{ v }}"></script>
 </body>
 </html>

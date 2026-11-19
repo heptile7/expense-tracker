@@ -72,7 +72,7 @@ function categoryOptions(selectedId, { includeBlank = false, blankLabel = "" } =
     const group = cats.filter((c) => c.kind === kind && (c.is_active || c.id === selectedId));
     if (!group.length) continue;
     html += `<optgroup label="${KIND_LABEL[kind]}">`;
-    for (const c of group) html += `<option value="${c.id}"${c.id === selectedId ? " selected" : ""}>${esc(c.name)}</option>`;
+    for (const c of group) html += `<option value="${c.id}"${c.id === selectedId ? " selected" : ""}>${c.parent_id ? "\u2003↳ " : ""}${esc(c.name)}</option>`;
     html += "</optgroup>";
   }
   return html;
@@ -108,6 +108,7 @@ async function refreshBadge() {
 // ── Tabs ─────────────────────────────────────────────────────────────────────
 const LOADERS = {
   dashboard: () => loadDashboard(),
+  plan: () => loadPlan(),
   transactions: () => loadTxns(true),
   review: () => loadReview(),
   import: () => Promise.all([loadStatements(), loadNetbanking()]),
@@ -128,57 +129,168 @@ const currentTab = () => location.hash.slice(1) || "dashboard";
 const reloadCurrent = () => LOADERS[currentTab()]?.().catch(fail);
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
+state.period = "month";
+const pct = (v) => (v == null ? "—" : `${Math.round(v * 100)}%`);
+const signed = (v) => `${v < 0 ? "−" : ""}${money(Math.abs(v), true)}`;
+
 async function loadDashboard() {
-  const params = new URLSearchParams();
-  if ($("#dash-month").value) params.set("month", $("#dash-month").value);
+  const params = new URLSearchParams({ period: state.period });
+  // Until you pick a month, let the server choose (the last full month, not one still in progress).
+  if (state.dashMonthPicked && $("#dash-month").value) params.set("month", $("#dash-month").value);
   if ($("#dash-account").value) params.set("account_id", $("#dash-account").value);
-  const d = await api("GET", `/api/dashboard?${params}`);
+  const d = await api("GET", `/api/overview?${params}`);
   state.dash = d;
-  const empty = !d.months.length;
-  $("#dash-empty").hidden = !empty;
-  $("#dash-body").hidden = empty;
-  if (empty) return;
-  if (!$("#dash-month").value) $("#dash-month").value = d.month;
-
-  $("#t-spent").textContent = money(d.total_expense, true);
-  $("#t-spent-sub").textContent = monthLabel(d.month);
-  $("#t-income").textContent = money(d.total_income, true);
-  $("#t-net").textContent = `${d.net < 0 ? "−" : ""}${money(Math.abs(d.net), true)}`;
-  $("#t-transfers").textContent = money(d.transfers_out, true);
-
-  const catIds = Object.fromEntries((state.meta?.categories || []).map((c) => [c.name, c.id]));
-  renderHBars($("#chart-categories"), d.by_category, d.total_expense, (row) => {
-    openTxns({ month: d.month, category_id: catIds[row.label] || "" });
-  });
-  renderHBars($("#chart-merchants"), d.top_merchants, d.total_expense, (row) => {
-    openTxns({ month: d.month, q: row.label });
-  });
+  $("#dash-empty").hidden = d.has_data;
+  $("#dash-body").hidden = !d.has_data;
+  if (!d.has_data) return;
+  $("#dash-month").value = d.period.end.slice(0, 7);
+  const p = d.period;
+  const soFar = p.in_progress ? " so far" : "";
+  $("#t-spent").textContent = money(d.spent, true);
+  $("#t-spent-sub").textContent = `${p.label}${soFar} · ${money(d.daily_average, true)} a day` +
+    (d.projected_spend ? ` · on pace for ${money(d.projected_spend, true)}` : "");
+  $("#t-income").textContent = money(d.income, true);
+  $("#t-income-sub").textContent = d.income_sources.slice(0, 2).map((x) => x.name).join(", ");
+  $("#t-saved").textContent = signed(d.saved);
+  $("#t-saved-sub").textContent = d.savings_rate == null ? "No income recorded"
+    : d.savings_rate < 0 ? (p.in_progress ? "Spending is ahead of income so far" : "Spent more than came in")
+    : `${pct(d.savings_rate)} of income`;
+  $("#t-invested").textContent = money(d.invested, true);
+  $("#t-invested-sub").textContent = d.invest_rate == null || d.invest_rate > 1 ? "Not counted as spending" : `${pct(d.invest_rate)} of income · not counted as spending`;
+  renderSplit(d);
+  renderFacts(d.facts);
+  renderCategoryTable(d);
+  renderRecurring(d);
+  renderMerchants(d.top_merchants);
+  renderPeople(d);
+  renderUnusual(d.unusual);
   renderTrend($("#chart-trend"), d.trend);
-  const review = d.needs_review ? ` ${plural(d.needs_review, "transaction")} need a look in Review.` : "";
   const chain = state.meta?.categorizer?.chain || [];
-  const claude = `New payees go to: ${chain.join(" → ")}.${d.llm_calls ? ` Claude has answered in ${plural(d.llm_calls, "call")} (API cost so far $${d.llm_cost_usd.toFixed(4)}).` : ""}`;
-  $("#dash-foot").textContent = `Spending is net of refunds booked to the same category. ${claude}${review}`;
+  $("#dash-foot").textContent = `Spending is net of refunds booked to the same category; transfers between your accounts and card bill payments aren't counted. ` +
+    `New payees are categorized by: ${chain.join(" → ")}.${d.needs_review ? ` ${plural(d.needs_review, "transaction")} need a look in Review.` : ""}`;
 }
 
-function renderHBars(el, rows, total, onClick) {
-  if (!rows.length) { el.innerHTML = `<div class="none">Nothing spent this month</div>`; return; }
-  const max = Math.max(...rows.map((r) => r.amount));
-  el.innerHTML = rows.map((r, i) => `
-    <button class="hbar" data-i="${i}" aria-label="${esc(r.label)}: ${money(r.amount)}">
-      <span class="hbar-label">${esc(r.label)}</span>
-      <span class="hbar-track"><span class="hbar-fill" style="width: calc((100% - 92px) * ${(r.amount / max).toFixed(4)})"></span>
-      <span class="hbar-value">${money(r.amount, true)}</span></span>
-    </button>`).join("");
-  $$(".hbar", el).forEach((b) => {
-    const r = rows[+b.dataset.i];
-    b.addEventListener("click", () => onClick(r));
-    b.addEventListener("mousemove", (e) => showTip(
-      `<div class="tt-title">${esc(r.label)}</div>
-       <div class="tt-row">Spent<b>${money(r.amount)}</b></div>
-       <div class="tt-row">Share of month<b>${total ? Math.round((r.amount / total) * 100) : 0}%</b></div>
-       <div class="tt-row">Transactions<b>${r.count}</b></div>`, e.clientX, e.clientY));
-    b.addEventListener("mouseleave", hideTip);
+function renderSplit(d) {
+  const inc = d.income || 0;
+  const overspent = d.saved < 0 || inc <= 0;
+  const total = overspent ? d.needs + d.wants : inc;
+  const parts = [["needs", "Needs", d.needs], ["wants", "Wants", d.wants]];
+  if (!overspent) parts.push(["saved", "Saved", d.saved]);
+  const bar = $("#split-bar");
+  bar.setAttribute("aria-label", parts.map(([, l, v]) => `${l} ${money(v, true)}`).join(", "));
+  bar.innerHTML = parts.filter(([, , v]) => v > 0).map(([k, l, v]) => {
+    const share = total ? v / total : 0;
+    return `<div class="part ${k}" style="flex: ${v} 1 0" data-k="${k}">${share >= 0.12 ? `${l} ${Math.round(share * 100)}%` : ""}</div>`;
+  }).join("");
+  $$(".part", bar).forEach((el) => {
+    const [, l, v] = parts.find(([k]) => k === el.dataset.k);
+    el.addEventListener("mousemove", (e) => showTip(`<div class="tt-title">${l}</div><div class="tt-row">Amount<b>${money(v, true)}</b></div>` +
+      (inc ? `<div class="tt-row">Share of income<b>${pct(v / inc)}</b></div>` : ""), e.clientX, e.clientY));
+    el.addEventListener("mouseleave", hideTip);
   });
+  // Shares of income normally; of spending when more went out than came in.
+  const share = (v) => (total ? ` (${pct(v / total)}${overspent ? " of spending" : ""})` : "");
+  $("#split-legend").innerHTML =
+    `<span class="key s1"></span>Needs <b>${money(d.needs, true)}</b>${share(d.needs)}` +
+    `<span class="key s2"></span>Wants <b>${money(d.wants, true)}</b>${share(d.wants)}` +
+    (overspent && inc > 0
+      ? `<span class="key over"></span>Overspent <b>${money(-d.saved, true)}</b> more than came in`
+      : `<span class="key s3"></span>Saved <b>${money(Math.max(d.saved, 0), true)}</b>${share(d.saved)}`);
+}
+
+function renderFacts(facts) {
+  const icon = { good: "✓", warn: "!", info: "i" };
+  $("#facts").innerHTML = facts.length
+    ? facts.map((f) => `<li class="${f.tone}"><span class="icon" aria-label="${f.tone}">${icon[f.tone]}</span><span>${esc(f.text)}</span></li>`).join("")
+    : `<li class="info"><span class="icon">i</span><span>Nothing unusual. Import more months to compare against your usual spending.</span></li>`;
+}
+
+function renderCategoryTable(d) {
+  const el = $("#cat-table");
+  if (!d.categories.length) { el.innerHTML = `<div class="none">No spending in this period</div>`; return; }
+  const max = d.categories[0].amount;
+  const month = d.period.kind === "month" ? d.period.start.slice(0, 7) : "";
+  let html = `<div class="cat-row head"><span>Category</span><span class="bar-cell"></span><span class="amt">Spent</span><span class="chg">vs usual</span><span class="budget-cell">Budget</span></div>`;
+  d.categories.forEach((c, i) => {
+    const subs = c.children.filter((ch) => !ch.is_parent);
+    const expandable = subs.length > 0;
+    let chg = `<span class="chg">—</span>`;
+    if (c.change_pct != null) {
+      const cls = c.change_pct > 0.1 ? "up" : c.change_pct < -0.1 ? "down" : "";
+      const arrow = c.change_pct > 0.005 ? "▲" : c.change_pct < -0.005 ? "▼" : "";
+      chg = `<span class="chg ${cls}" title="Usual for this point: ${money(c.usual, true)}">${arrow} ${Math.abs(Math.round(c.change_pct * 100))}%</span>`;
+    }
+    const budget = c.budget
+      ? `<div class="budget">${pct(c.budget_used)} of ${money(c.budget, true)}<div class="meter${c.budget_used > 1 ? " over" : ""}"><i style="width:${Math.min(100, c.budget_used * 100)}%"></i></div></div>`
+      : `<div class="budget"></div>`;
+    html += `<div class="cat-row top" data-i="${i}">
+      <button class="name" data-toggle="${expandable ? i : ""}" data-cat="${c.id}" aria-expanded="false">
+        <span class="caret">${expandable ? "▸" : ""}</span><span>${esc(c.name)}</span></button>
+      <div class="bar-cell"><div class="bar" style="width:${(c.amount / max) * 100}%"></div></div>
+      <div class="amt">${money(c.amount, true)}</div>${chg}<div class="budget-cell">${budget}</div></div>`;
+    for (const ch of c.children) {
+      if (!expandable) break;
+      html += `<div class="cat-row child" data-parent="${i}" hidden>
+        <button class="name" data-cat="${ch.id}" data-month="${month}"><span>${esc(ch.is_parent ? `${c.name} (other)` : ch.name)}</span></button>
+        <div class="bar-cell"><div class="bar" style="width:${(ch.amount / max) * 100}%"></div></div>
+        <div class="amt">${money(ch.amount, true)}</div><span class="chg">${plural(ch.count, "payment")}</span><span class="budget-cell"></span></div>`;
+    }
+  });
+  el.innerHTML = html;
+  $$(".cat-row.top .name", el).forEach((b) => b.addEventListener("click", () => {
+    if (b.dataset.toggle === "") { openTxns({ month, category_id: b.dataset.cat }); return; }
+    const row = b.closest(".cat-row");
+    const open = !row.classList.contains("open");
+    row.classList.toggle("open", open);
+    b.setAttribute("aria-expanded", open);
+    $$(`.cat-row.child[data-parent="${b.dataset.toggle}"]`, el).forEach((r) => { r.hidden = !open; });
+  }));
+  $$(".cat-row.child .name", el).forEach((b) => b.addEventListener("click", () => openTxns({ month: b.dataset.month, category_id: b.dataset.cat })));
+}
+
+function miniTable(rows, cols, empty) {
+  if (!rows.length) return `<div class="none">${empty}</div>`;
+  return `<table class="mini"><thead><tr>${cols.map((c) => `<th class="${c.num ? "num" : ""}">${c.h}</th>`).join("")}</tr></thead><tbody>` +
+    rows.map((r) => `<tr class="${r._cls || ""}">${cols.map((c) => `<td class="${c.num ? "num" : ""}">${c.f(r)}</td>`).join("")}</tr>`).join("") +
+    "</tbody></table>";
+}
+const nameCell = (name, sub) => `<div class="name" title="${esc(name)}">${esc(name)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ""}`;
+
+function renderRecurring(d) {
+  const rows = d.recurring.map((r) => ({ ...r, _cls: r.active ? "" : "inactive" }));
+  $("#recurring-total").textContent = d.recurring_monthly
+    ? `≈ ${money(d.recurring_monthly, true)} a month${d.recurring_share_of_income ? ` · ${pct(d.recurring_share_of_income)} of usual income` : ""}` : "";
+  $("#recurring").innerHTML = miniTable(rows, [
+    { h: "Payee", f: (r) => nameCell(r.payee, r.active ? r.category : `${r.category} · not seen recently`) },
+    { h: "Per month", num: true, f: (r) => money(r.monthly, true) },
+    { h: "Last paid", num: true, f: (r) => fmtDate(r.last_date) },
+  ], "No regular payments spotted yet (needs about 3 months of statements).");
+}
+
+function renderMerchants(list) {
+  $("#merchants").innerHTML = miniTable(list, [
+    { h: "Merchant", f: (m) => nameCell(m.name, m.category) },
+    { h: "Visits", num: true, f: (m) => m.count },
+    { h: "Average", num: true, f: (m) => money(m.average, true) },
+    { h: "Total", num: true, f: (m) => money(m.amount, true) },
+  ], "No merchant spending in this period");
+}
+
+function renderPeople(d) {
+  $("#people-total").textContent = d.people_total ? `${money(d.people_total, true)} in total` : "";
+  $("#people").innerHTML = miniTable(d.people, [
+    { h: "Person", f: (m) => nameCell(m.name) },
+    { h: "Payments", num: true, f: (m) => m.count },
+    { h: "Total", num: true, f: (m) => money(m.amount, true) },
+  ], "No payments to individuals in this period");
+}
+
+function renderUnusual(list) {
+  $("#unusual").innerHTML = miniTable(list, [
+    { h: "Payment", f: (u) => `<div class="name payee" data-open="${u.id}" tabindex="0">${esc(u.payee || "Unknown")}</div><div class="sub">${esc(u.category)} · ${u.times_usual}× the usual payment</div>` },
+    { h: "Date", num: true, f: (u) => fmtDate(u.date) },
+    { h: "Amount", num: true, f: (u) => money(u.amount, true) },
+  ], "Nothing out of the ordinary");
 }
 
 function niceMax(v) {
@@ -222,9 +334,17 @@ function renderTrend(el, trend) {
     r.addEventListener("mousemove", (e) => showTip(
       `<div class="tt-title">${monthLabel(t.month)}</div>
        <div class="tt-row"><span class="legend"><span class="key s1"></span></span>Spent<b>${money(t.expense, true)}</b></div>
-       <div class="tt-row"><span class="legend"><span class="key s2"></span></span>Income<b>${money(t.income, true)}</b></div>`, e.clientX, e.clientY));
+       <div class="tt-row"><span class="legend"><span class="key s2"></span></span>Income<b>${money(t.income, true)}</b></div>
+       <div class="tt-row">Kept<b>${t.savings_rate == null ? "—" : pct(t.savings_rate)}</b></div>`, e.clientX, e.clientY));
     r.addEventListener("mouseleave", hideTip);
-    r.addEventListener("click", () => { $("#dash-month").value = t.month; if ($("#dash-month").value === t.month) loadDashboard().catch(fail); });
+    r.addEventListener("click", () => {
+      $("#dash-month").value = t.month;
+      if ($("#dash-month").value !== t.month) return;
+      state.dashMonthPicked = true;
+      state.period = "month";
+      $$("#dash-period button").forEach((b) => b.classList.toggle("active", b.dataset.p === "month"));
+      loadDashboard().catch(fail);
+    });
   });
 }
 
@@ -341,6 +461,99 @@ async function openDetails(id) {
   } else if (action === "similar") {
     openTxns({ merchant_key: t.merchant_key, merchant_label: t.counterparty });
   }
+}
+
+// ── Plan ─────────────────────────────────────────────────────────────────────
+const HEALTH = { strong: "Doing well", okay: "Okay", needs_attention: "Needs attention" };
+
+async function loadPlan() {
+  renderPlan(await api("GET", "/api/plan"));
+  await loadBudgets();
+}
+
+function compareBar(needs, wants, saved) {
+  const parts = [["needs", needs], ["wants", wants], ["saved", Math.max(saved, 0)]];
+  return `<div class="segbar">${parts.filter(([, v]) => v > 0).map(([k, v]) =>
+    `<div class="part ${k}" style="flex: ${v} 1 0">${v >= 12 ? `${Math.round(v)}%` : ""}</div>`).join("")}</div>`;
+}
+
+function renderPlan(rec) {
+  const body = $("#plan-body");
+  $("#plan-disclaimer").textContent = rec?.disclaimer || "General budgeting guidance based only on your transactions; not professional financial advice.";
+  if (!rec || !rec.plan) {
+    $("#plan-meta").textContent = "";
+    body.innerHTML = `<p class="none">No plan yet. Create one above; it takes about a minute.</p>`;
+    return;
+  }
+  const p = rec.plan;
+  const a = rec.averages || {};
+  $("#plan-meta").textContent = `Made ${fmtDate(rec.created_at.slice(0, 10))} · ${rec.backend} · based on ${rec.based_on.map(monthShortYear).join(", ")}`;
+  const fell = rec.errors?.length && rec.backend === "Offline rules"
+    ? `<p class="hint">Claude wasn't available (${esc(rec.errors.join("; "))}), so this plan uses offline rules.</p>` : "";
+  const now = a.income ? [a.needs / a.income * 100, a.wants / a.income * 100, a.saved / a.income * 100] : null;
+  const total = p.actions.reduce((sum, x) => sum + (x.monthly_saving || 0), 0);
+  body.innerHTML = `${fell}
+    <div class="plan-head"><span class="health ${p.health.rating}">${HEALTH[p.health.rating] || p.health.rating}</span>
+      <p class="plan-summary">${esc(p.summary)}</p></div>
+    <p class="hint">${esc(p.health.comment)}</p>
+    <div class="compare">
+      ${now ? `<span>You now</span>${compareBar(...now)}` : ""}
+      <span>Target</span>${compareBar(p.targets.needs_pct, p.targets.wants_pct, p.targets.savings_pct)}
+    </div>
+    <div class="legend split-legend"><span class="key s1"></span>Needs<span class="key s2"></span>Wants<span class="key s3"></span>Saved
+      <span class="hint" style="margin-left:12px">${esc(p.targets.note)}</span></div>
+    <div class="plan-section"><h3>What to do${total ? ` · could free up about ${money(total, true)} a month` : ""}</h3>
+      <div class="actions">${p.actions.map((x) => `<div class="action">
+        <div class="t">${esc(x.title)} <span class="pill ${x.priority}">${x.priority}</span></div>
+        <div class="save">${x.monthly_saving ? `≈ ${money(x.monthly_saving, true)}/month` : ""}</div>
+        <div class="d">${esc(x.detail)}</div></div>`).join("")}</div></div>
+    <div class="plan-section"><h3>Suggested monthly budgets</h3>
+      ${p.budgets.length ? `${miniTable(p.budgets, [
+        { h: "Category", f: (b) => nameCell(b.category, b.reason) },
+        { h: "Budget", num: true, f: (b) => money(b.monthly, true) },
+      ], "")}<div class="toolbar" style="margin-top:10px"><button class="secondary" id="plan-apply">Use these as my budgets</button></div>` : `<p class="none">No budgets suggested.</p>`}
+    </div>
+    <div class="plan-section"><h3>Emergency fund</h3><p>${esc(p.emergency_fund)}</p></div>
+    ${p.watch?.length ? `<div class="plan-section"><h3>Keep an eye on</h3><ul>${p.watch.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>` : ""}`;
+  $("#plan-apply")?.addEventListener("click", async () => {
+    try {
+      const r = await api("POST", `/api/plan/${rec.id}/apply-budgets`);
+      toast(`Set ${plural(r.applied.length, "budget")}. The dashboard now tracks them.`);
+      loadBudgets().catch(fail);
+    } catch (err) { fail(err); }
+  });
+}
+
+function monthShortYear(m) { const [y, mo] = m.split("-"); return new Date(+y, +mo - 1, 1).toLocaleDateString("en-IN", { month: "short", year: "numeric" }); }
+
+async function createPlan(useClaude) {
+  const btns = [$("#plan-create"), $("#plan-offline")];
+  btns.forEach((b) => { b.disabled = true; });
+  $("#plan-body").innerHTML = `<p class="none">${useClaude ? "Asking Claude for a plan… this can take a minute." : "Building an offline plan…"}</p>`;
+  try {
+    renderPlan(await api("POST", "/api/plan", { use_claude: useClaude }));
+  } catch (err) { fail(err); loadPlan().catch(fail); }
+  finally { btns.forEach((b) => { b.disabled = false; }); }
+}
+
+async function loadBudgets() {
+  const months = state.meta?.months || [];
+  const thisMonth = new Date().toISOString().slice(0, 7);
+  const anchor = months[0] === thisMonth ? months[1] : months[0];
+  const [budgets, avg, cur] = await Promise.all([
+    api("GET", "/api/budgets"),
+    anchor ? api("GET", `/api/overview?period=3m&month=${anchor}`) : Promise.resolve(null),
+    months[0] ? api("GET", `/api/overview?period=month&month=${months[0]}`) : Promise.resolve(null),
+  ]);
+  const byId = Object.fromEntries(budgets.map((b) => [b.category_id, b.monthly]));
+  const amt = (o, id) => (o?.categories.find((c) => c.id === id)?.amount || 0);
+  const tops = (state.meta?.categories || []).filter((c) => !c.parent_id && c.kind === "expense" && c.is_active && c.name !== "Uncategorized");
+  const rows = tops.map((c) => ({ ...c, avg: amt(avg, c.id) / 3, now: amt(cur, c.id) })).sort((x, y) => y.avg - x.avg);
+  $("#budget-body").innerHTML = rows.map((c) => `<tr>
+    <td>${esc(c.name)}</td><td class="how">${esc(GROUP_LABEL[c.grp] || c.grp || "")}</td>
+    <td class="num">${c.avg ? money(c.avg, true) : "—"}</td>
+    <td class="num">${c.now ? money(c.now, true) : "—"}</td>
+    <td><input type="number" min="0" step="100" class="budget-input" data-id="${c.id}" value="${byId[c.id] ?? ""}" placeholder="No budget" aria-label="Budget for ${esc(c.name)}" style="max-width:140px"></td></tr>`).join("");
 }
 
 // ── Review ───────────────────────────────────────────────────────────────────
@@ -570,13 +783,24 @@ async function loadRules() {
 }
 
 // ── Categories ───────────────────────────────────────────────────────────────
+const GROUP_LABEL = { needs: "Needs", wants: "Wants", savings: "Savings", income: "Income", transfer: "Transfer" };
+
 async function loadCategories() {
   const cats = await api("GET", "/api/categories");
   state.meta.categories = cats;
+  const tops = cats.filter((c) => !c.parent_id);
+  const hasKids = new Set(cats.filter((c) => c.parent_id).map((c) => c.parent_id));
+  $("#cf-parent").innerHTML = `<option value="">Main category</option>` + tops.filter((t) => t.kind !== "transfer" || t.grp === "savings")
+    .map((t) => `<option value="${t.id}">Sub-category of ${esc(t.name)}</option>`).join("");
   const mergeOpts = (c) => `<option value="">—</option>` + cats.filter((o) => o.id !== c.id).map((o) => `<option value="${o.id}">${esc(o.name)}</option>`).join("");
+  const parentOpts = (c) => `<option value="">—</option>` + tops.filter((t) => t.id !== c.id && t.kind === c.kind)
+    .map((t) => `<option value="${t.id}"${t.id === c.parent_id ? " selected" : ""}>${esc(t.name)}</option>`).join("");
+  const opt = (vals, cur) => vals.map((v) => `<option value="${v}"${v === cur ? " selected" : ""}>${GROUP_LABEL[v] || v[0].toUpperCase() + v.slice(1)}</option>`).join("");
   $("#cat-body").innerHTML = cats.map((c) => `<tr data-id="${c.id}">
-      <td><input class="cat-field" data-field="name" value="${esc(c.name)}" ${c.is_system ? "disabled" : ""} aria-label="Name"></td>
-      <td><select class="cat-field" data-field="kind" aria-label="Kind">${["expense", "income", "transfer"].map((k) => `<option value="${k}"${k === c.kind ? " selected" : ""}>${k === "transfer" ? "Transfer" : k[0].toUpperCase() + k.slice(1)}</option>`).join("")}</select></td>
+      <td><input class="cat-field" data-field="name" value="${esc(c.name)}" ${c.is_system ? "disabled" : ""} aria-label="Name" style="${c.parent_id ? "margin-left:20px;width:calc(100% - 20px)" : ""}"></td>
+      <td><select class="cat-field" data-field="parent_id" aria-label="Sub-category of" ${c.is_system || hasKids.has(c.id) ? "disabled" : ""}>${parentOpts(c)}</select></td>
+      <td><select class="cat-field" data-field="kind" aria-label="Kind" ${c.parent_id ? "disabled" : ""}>${opt(["expense", "income", "transfer"], c.kind)}</select></td>
+      <td><select class="cat-field" data-field="grp" aria-label="Group" ${c.parent_id ? "disabled title=\"Follows its main category\"" : ""}>${opt(["needs", "wants", "savings", "income", "transfer"], c.grp)}</select></td>
       <td><input class="cat-field" data-field="description" value="${esc(c.description || "")}" aria-label="Description"></td>
       <td class="num">${c.txn_count}</td>
       <td><input type="checkbox" class="cat-field" data-field="is_active" ${c.is_active ? "checked" : ""} ${c.is_system ? "disabled" : ""} aria-label="Shown"></td>
@@ -656,7 +880,23 @@ function bind() {
   });
 
   // Dashboard
-  $("#dash-month").addEventListener("change", () => loadDashboard().catch(fail));
+  $$("#dash-period button").forEach((b) => b.addEventListener("click", () => {
+    state.period = b.dataset.p;
+    $$("#dash-period button").forEach((x) => x.classList.toggle("active", x === b));
+    loadDashboard().catch(fail);
+  }));
+  $("#dash-month").addEventListener("change", () => { state.dashMonthPicked = true; loadDashboard().catch(fail); });
+
+  // Plan & budgets
+  $("#plan-create").addEventListener("click", () => createPlan(true));
+  $("#plan-offline").addEventListener("click", () => createPlan(false));
+  $("#budget-body").addEventListener("change", async (e) => {
+    if (!e.target.matches(".budget-input")) return;
+    try {
+      const r = await api("PUT", `/api/budgets/${e.target.dataset.id}`, { monthly: e.target.value });
+      toast(r.monthly ? `${r.category}: budget set to ${money(r.monthly, true)} a month` : `${r.category}: budget removed`);
+    } catch (err) { fail(err); }
+  });
   $("#dash-account").addEventListener("change", () => loadDashboard().catch(fail));
 
   // Transactions
@@ -762,7 +1002,7 @@ function bind() {
   $("#cat-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     try {
-      await api("POST", "/api/categories", { name: $("#cf-name").value, kind: $("#cf-kind").value, description: $("#cf-desc").value });
+      await api("POST", "/api/categories", { name: $("#cf-name").value, kind: $("#cf-kind").value, description: $("#cf-desc").value, parent_id: $("#cf-parent").value || null });
       $("#cf-name").value = ""; $("#cf-desc").value = "";
       toast("Category added"); await loadMeta(); loadCategories();
     } catch (err) { fail(err); }
