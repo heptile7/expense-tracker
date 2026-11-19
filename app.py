@@ -11,26 +11,50 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 import logging
 import re
+import time
 import uuid
 
 from fastapi import Body, FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 import config
-from tracker import advisor, db, insights, service
+from tracker import advisor, db, insights, logs, service
 from tracker.fetch import gmail, netbanking, secrets
 from tracker.importer import NeedsAccount
 from tracker.parsers import SUPPORTED, PasswordRequired, StatementError
 
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger(__name__)
+LOG_FILE = logs.setup("app")
+log = logging.getLogger("app")
+access = logging.getLogger("app.requests")
 
 db.init_db()
 app = FastAPI(title="Expense Tracker", docs_url="/api/docs", redoc_url=None)
 app.mount("/static", StaticFiles(directory=config.BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=config.BASE_DIR / "templates")
+log.info("Started: database %s, log %s", db.get_db_path().name, LOG_FILE)
+
+# Polled every couple of seconds while a net banking window is open: keep it out of the log.
+_QUIET_PATHS = {"/api/netbanking/session"}
+
+
+@app.middleware("http")
+async def _log_requests(request: Request, call_next):
+    """One line per request: method, path, status and time. Never the query string (it can hold search text)."""
+    started = time.perf_counter()
+    path = request.url.path
+    try:
+        response = await call_next(request)
+    except Exception:
+        access.error("%s %s -> failed after %.0f ms", request.method, path, (time.perf_counter() - started) * 1000)
+        raise
+    if path.startswith("/static") or (path in _QUIET_PATHS and request.method == "GET"):
+        return response
+    ms = (time.perf_counter() - started) * 1000
+    level = logging.ERROR if response.status_code >= 500 else logging.WARNING if response.status_code >= 400 else logging.INFO
+    access.log(level, "%s %s -> %d (%.0f ms)", request.method, path, response.status_code, ms)
+    return response
 
 
 # ── Error mapping ─────────────────────────────────────────────────────────────
@@ -46,10 +70,21 @@ async def _bad_request(_: Request, exc: ValueError):
     return JSONResponse({"error": str(exc)}, status_code=400)
 
 
+@app.exception_handler(Exception)
+async def _unexpected(request: Request, exc: Exception):
+    log.exception("Unhandled error in %s %s", request.method, request.url.path)
+    return JSONResponse({"error": f"Something went wrong ({type(exc).__name__}). Details are in data/logs/app.log."}, status_code=500)
+
+
 # ── Page ──────────────────────────────────────────────────────────────────────
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return Response(status_code=204)  # the page has an inline icon; keeps 404s out of the log
+
+
+@app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
 def index(request: Request):
     # Version stamp so the browser fetches app.js/style.css again whenever they change.
     static = config.BASE_DIR / "static"
@@ -181,16 +216,20 @@ def import_statement(
             except PasswordRequired as exc:
                 last_exc = exc
         else:
+            log.warning("Upload (%s) needs a PDF password (%s)", path.suffix, "wrong one given" if password else "none given")
             return JSONResponse(
                 {"error": str(last_exc), "needs_password": True, "wrong_password": bool(password)}, status_code=409
             )
         if password and remember_password and result.account_id:
             secrets.set_pdf_password(result.account_id, password)
+            log.info("Saved a PDF password for account %s in the credential store", result.account_id)
         keep = not result.duplicate_file
         return result.as_dict()
     except NeedsAccount as exc:
+        log.warning("Upload (%s) needs an account choice: %s", path.suffix, type(exc).__name__)
         return JSONResponse({"error": str(exc), "needs_account": True, "bank": exc.bank, "last4": exc.last4}, status_code=409)
     except StatementError as exc:
+        log.warning("Upload (%s) could not be read: %s", path.suffix, exc)
         return JSONResponse({"error": str(exc)}, status_code=422)
     finally:
         if not keep:
@@ -388,4 +427,5 @@ def llm_usage():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host=config.HOST, port=config.PORT)
+    # log_config=None: keep our logging setup instead of uvicorn's own (requests are logged by the middleware).
+    uvicorn.run(app, host=config.HOST, port=config.PORT, log_config=None)

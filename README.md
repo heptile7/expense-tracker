@@ -1,95 +1,117 @@
 # Expense Tracker
 
-A local expense tracker for HDFC and City Union Bank statements. It categorizes transactions from their narrations and learns from your corrections. Unknown payees go to **Claude Haiku 5.5** (`claude-haiku-5-5`, the cheapest Claude model). An **MCP server** lets you ask Claude Desktop about your spending.
+A private, local expense tracker for Indian bank accounts (HDFC Bank and City Union Bank, and most other banks' statement formats). It turns your statements into categorized spending, learns from every correction you make, and gives you the statistics and a money plan to act on.
 
-Everything runs on your machine (`127.0.0.1` only), and the data lives in `data/expenses.db`.
+Everything runs on your own computer at `http://127.0.0.1:8765`. Your data lives in `data/expenses.db` and never leaves the machine, apart from the small, masked pieces described under [Privacy](#privacy).
 
-## Setup
+## What it does
+
+- **Imports statements:** Excel (`.xls`/`.xlsx`), CSV or PDF, including password-protected PDFs. You can drag them in, fetch them through [assisted net banking](#fetch-from-net-banking-assisted-login), or pull them from [Gmail](#gmail-optional-read-only). Overlapping statements never double-count.
+- **Recognises the payee** in UPI, card, NEFT, IMPS, auto-debit (ACH/NACH), ATM and bank-charge narrations. So "Swiggy" is Swiggy whether you paid by UPI, card or a different UPI ID.
+- **Categorizes automatically** into 29 categories and 34 sub-categories (Food & Dining → Food Delivery / Restaurants & Cafes, Transport → Cabs & Autos / Public Transport / Vehicle Upkeep, ...):
+  - your own rules first, then about 300 built-in keywords;
+  - then Claude for payees it hasn't seen (one call per import);
+  - then an offline guesser when Claude isn't available.
+- **Learns from you.** Change a category and choose "all from this payee": every past transaction from that payee updates, and future ones follow. Or change just one transaction.
+- **Spots transfers** between your own accounts and credit-card bill payments, and leaves them out of spending.
+- **Dashboard:** spent, income, saved and invested (with rates); the needs / wants / saved split; each category against your usual; regular commitments (rent, EMIs, SIPs, subscriptions); top merchants; payments to people; unusually large payments; a 12-month trend. You can look at a month, 3 months, the financial year (April–March) or 12 months.
+- **Money plan:** Claude reads your monthly totals and suggests concrete actions with estimated monthly savings, budgets you can adopt in one click, and an emergency-fund target. There's an offline version too.
+- **Budgets** per category, with progress shown on the dashboard.
+- **Claude Desktop integration (MCP):** ask "how much did I spend on food last month?" or "what's my savings rate?", and fix categories from chat.
+
+## Quick start
+
+You need Windows with Python 3.12 (via [uv](https://docs.astral.sh/uv/)) and Microsoft Edge or Google Chrome.
 
 ```powershell
 uv venv --python 3.12 .venv
+```
+
+```powershell
 uv pip install --python .venv\Scripts\python.exe -r requirements.txt
-copy .env.example .env      # optional: put an ANTHROPIC_API_KEY with credits in .env
+```
+
+```powershell
 .venv\Scripts\python.exe app.py
 ```
 
-No API credits? If you have a Claude Pro/Max plan and Claude Code installed, sign in once with `claude`. The app then uses your subscription automatically. Without either, the offline categorizer still works.
+Open http://127.0.0.1:8765, then:
 
-Open http://127.0.0.1:8765. The steps after that:
+1. **Settings → Add an account** for each bank account. Enter the **last 4 digits**, so imports find the right account, and **your name as it appears on the account**, so transfers to yourself are recognised.
+2. **Import:** drop a statement in, or use **Fetch from net banking**.
+3. **Review:** confirm or fix anything the app was unsure about. Each fix teaches it.
+4. **Dashboard** and **Plan:** see where your money goes and what to change.
 
-1. **Settings → Add an account** for each HDFC / CUB account. Enter the **last 4 digits**, so imports pick the right account automatically. Enter **your name as on the account**, so transfers to yourself are recognised.
-2. **Import**: drop Excel (.xls/.xlsx), CSV or PDF statements. For a password-protected PDF the app asks for the password and can remember it.
-3. **Review**: fix anything Claude was unsure about.
+### Claude for categorization (optional, recommended)
 
-To check your API key and see the real cost (one call, well under $0.01): `.venv\Scripts\python.exe scripts\smoke_claude.py`
+New payees are categorized by Claude Haiku 5.5, the cheapest Claude model. Two ways to connect it, chosen automatically (or pick one in **Settings → Categorization**):
 
-## How categorization works
-
-Each narration is reduced to a **payee key**: direction plus cleaned payee name. Some examples:
-
-- `UPI-SWIGGY-swiggy@icici-…` becomes `D:SWIGGY`.
-- `UPI/DR/…/SWIGGY/YESB/…` also becomes `D:SWIGGY`.
-- A refund from Swiggy becomes `C:SWIGGY`, so it is kept separate from purchases.
-
-Reference numbers, IFSC codes and card numbers are stripped out. If the payee name is a payment gateway (PayU, Razorpay…), the UPI ID is used instead.
-
-The first match wins:
-
-| Order | Source | Notes |
+| Route | Setup | Cost |
 |---|---|---|
-| 1 | **You, one-off** | A category you set on a single transaction. Never touched again. |
-| 2 | **Your rules** | Created when you correct a category, or added on the Rules page. |
-| 3 | **Built-in rules** | About 250 keywords: Swiggy, Zomato, Uber, IRCTC, TANGEDCO, ATM, SIP… |
-| 4 | **Claude's earlier answer** | Cached per payee, so a payee is only ever sent once. |
-| 5 | **Claude Haiku 5.5** | All new payees from an import go in one batched call. Results with confidence below 60% are flagged for review. |
-| 6 | **Offline guess** | A small naive-Bayes model on the words in the payee name, UPI ID and UPI remark, trained on your corrections plus a built-in word list (MESS → Food, TAILORS → Personal Care…). Phone-number UPI IDs default to Payments to People. Not cached, so Claude can improve these later. |
-| 7 | **Uncategorized** | Flagged for review. Use "Categorize again" to retry. |
+| **Your Claude subscription** (Pro/Max) | Install Claude Code and sign in once by running `claude`. | Counts toward your plan's usage limits |
+| **Claude API key** | Copy `.env.example` to `.env` and set `ANTHROPIC_API_KEY` (key needs credits). | About $0.001 per import of 30 new payees |
 
-**Which Claude is used** is set in **Settings → Categorization**:
+Without either, the offline guesser and the built-in rules still work, and nothing leaves your computer. To check your setup with one real call (well under $0.01):
 
-- **Automatic** (the default) tries, in order: the Claude API (if `ANTHROPIC_API_KEY` is set), then your Claude subscription through the Claude Code CLI, then the offline guesser.
-- **Claude via your subscription** runs the official `claude` CLI in print mode, signed in with your own Pro/Max account. It uses no tools, no MCP servers and no settings files, and nothing is saved as a session. It counts toward your plan's usage limits; there's no per-token bill. This is fine for your own use. If you ever host the app for other people, use an API key instead.
-- **Claude API key** needs credits on console.anthropic.com.
-- **Offline only** sends nothing anywhere.
+```powershell
+.venv\Scripts\python.exe scripts\smoke_claude.py
+```
 
-If one route fails (no API credits, usage limit reached, no network), the next one takes over.
+## Using the app
 
-**Correcting a category** asks whether to apply it to *all transactions from that payee, now and in future* or *only this one*.
+### Categories and corrections
 
-- **All from this payee** saves a rule. Every past transaction from that payee updates right away, and future imports follow the rule. Your recent corrections are also sent to Claude as examples, so new payees that resemble ones you've corrected get classified your way.
-- **Accepting** Claude's pick in Review turns it into your own rule.
+A transaction gets its category from the first of these that applies:
 
-Transfers between your accounts (a debit in one matched by a credit in the other within 2 days), credit card bill payments and investments are kept out of spending totals.
+1. Your one-off choice for that transaction.
+2. Your rules: corrections you made ("all from this payee") and rules you added on the **Rules** page ("narration contains ZOMATO → Food Delivery").
+3. Built-in keyword rules (Swiggy, Zomato, Uber, IRCTC, TANGEDCO, Airtel, SIPs, ATM...).
+4. Claude's earlier answer for this payee (each payee is asked about only once).
+5. Claude, for payees not seen before.
+6. The offline guesser: learns from your corrections and from business words (MESS, TAILORS, MEDICALS, a "RENT" note...).
+7. Uncategorized, flagged for **Review**.
 
-**What is sent to Claude:** the payee name, UPI ID, channel, debit/credit, and the narration with every number masked. Amounts, balances, account numbers and reference numbers are never sent. A typical import of 30 new payees costs about $0.001.
+Low-confidence results land in **Review**. Accepting one turns it into your own rule. **Categorize again** retries Claude for uncategorized transactions and offline guesses.
 
-## Fetch from net banking (assisted login)
+In **Categories** you can rename categories, add sub-categories, merge categories, hide ones you don't use, and choose whether each is a **need**, a **want** or **savings**. That choice drives the 50/30/20 split.
 
-**Import → Fetch from net banking**, pick the account, then click **Open net banking**:
+### Fetch from net banking (assisted login)
 
-1. A browser window opens at your bank's login page. It's your installed Edge or Chrome, with a fresh profile that's thrown away afterwards.
-2. **You log in yourself** (user ID, password, OTP, captcha). The app never reads or stores any of it.
-3. Download a statement as usual, Excel preferred. It's imported into the chosen account automatically. If the statement belongs to a different account number, it goes to the matching account instead.
-4. **To make the next fetch automatic**, click **Record my steps** after logging in, before you start navigating. Then open the statement page, choose the account, period and format, and download. The recording stops by itself when the file arrives.
+**Import → Fetch from net banking**, pick the account, then **Open net banking**:
 
-   Next time: log in, choose a period ("since the last transaction", last 30/90 days or custom dates), and click **Fetch statement**. The app replays your clicks with the new dates filled in.
+1. A browser window opens at the bank's login page. It's your Edge or Chrome, with a fresh profile that's thrown away afterwards.
+2. **You log in yourself** (user ID, password, OTP, captcha). The app never reads or stores what you type there.
+3. Download a statement as usual and it's imported automatically.
+4. To automate the next time, click **Record my steps** after logging in, then go to the statement and download it.
 
-The recorder keeps only clicks, dropdown choices and date fields. It ignores password, OTP, PIN, user-ID, card and phone fields, and clicks inside calendar pop-ups. If the bank changes its pages, the app says which step it couldn't find. You then finish by hand (the download is still imported) and record again.
+   Next time: log in, choose a period ("since the last transaction", last 30 or 90 days, or custom dates), and click **Fetch statement**. The app repeats your clicks with the new dates.
 
-The login page addresses are editable: the banks moved to RBI's `.bank.in` domains, so check that the default opens the real login page. The app adds no anti-bot workarounds. If a bank refuses to work in an automated browser window, download the statement in your normal browser and use the regular import. Automated access may also go against your bank's terms of use.
+The recorder keeps only clicks, dropdown choices and date fields. It ignores login, password, OTP, PIN, card and phone fields, and clicks inside calendar pop-ups. It finds fields by their visible label, so it copes with pages whose internal IDs change, and month dropdowns follow the new period. If a bank changes its site, the app says which step failed. You can finish by hand (the download still imports) and record again.
 
-MPIN-based access to the banks' mobile apps is intentionally not supported. An MPIN is tied to the bank's app on your registered phone, and using it elsewhere would mean defeating the bank's device binding.
+Default login pages are `now.hdfc.bank.in` (HDFC) and `online.cub.bank.in` (CUB's "All in One"). Both are editable in the panel. The app adds no anti-bot workarounds. If a bank refuses an automated browser window, download the statement normally and drop it on the Import tab. Automated access may go against your bank's terms. Access through a bank's mobile-app MPIN is deliberately not supported.
 
-## Gmail (optional, read-only)
+### Money plan
+
+**Plan → Create my plan with Claude** uses your last 3 complete months. You get:
+
+- a summary and a health rating, with your needs/wants/saved split against a target;
+- prioritised actions with the monthly amount each could free up;
+- suggested monthly budgets ("Use these as my budgets");
+- an emergency-fund target (about 6 months of essentials) and how to build it;
+- things to keep an eye on.
+
+**Offline plan** builds a simpler, rule-based version that sends nothing. The plan uses Claude Opus through the same route as categorization. This is general budgeting guidance based only on your transactions, not professional financial advice. It never recommends specific investment products; for those decisions, talk to a SEBI-registered adviser.
+
+### Gmail (optional, read-only)
 
 1. In [Google Cloud Console](https://console.cloud.google.com/), create a project and enable the **Gmail API**.
-2. Under **APIs & Services → OAuth consent screen**, choose External and add yourself as a test user.
+2. Under **OAuth consent screen**, choose External and add yourself as a test user.
 3. Create credentials of type **OAuth client ID → Desktop app**. Download the JSON and save it as `data/credentials.json`.
-4. In **Settings → Gmail**, click **Connect Gmail** and approve read-only access in the browser.
-5. For each account, fill in **Gmail search** with a query that finds that bank's statement emails. For example: `from:(bank-sender@example.com) subject:(statement)`. Copy the sender address from one of your real statement emails.
-6. Save the account's **PDF password** (stored in Windows Credential Manager), then click **Fetch statements now**.
+4. In **Settings → Gmail**, click **Connect Gmail** and approve read-only access.
+5. For each account, set **Gmail search** to a query that finds that bank's statement emails, for example `from:(bank-sender@example.com) subject:(statement)`.
+6. Save the account's **PDF password** (kept in Windows Credential Manager), then click **Fetch statements now**.
 
-## Claude Desktop (MCP)
+### Claude Desktop (MCP)
 
 Add this to `%APPDATA%\Claude\claude_desktop_config.json` and restart Claude Desktop:
 
@@ -104,21 +126,83 @@ Add this to `%APPDATA%\Claude\claude_desktop_config.json` and restart Claude Des
 }
 ```
 
-Tools: `spending_summary`, `search_transactions`, `list_categories`, `review_queue`, `list_accounts`, `recategorize`, `add_rule`. A correction made through Claude Desktop teaches the tracker exactly like one made in the web UI.
+| Tool | What it does |
+|---|---|
+| `spending_overview` | Savings rate, needs/wants, change vs usual, commitments, key facts |
+| `spending_summary` | Totals by category, merchant, month or account |
+| `search_transactions` | Find transactions by text, category, date or amount |
+| `review_queue` | Low-confidence and uncategorized transactions |
+| `recategorize` | Fix a category (teaches the tracker, like the web app) |
+| `add_rule` | "Narration contains X → category" |
+| `list_categories`, `list_accounts` | Reference data |
+| `money_plan` | The latest money plan |
 
-Example question: *"How much did I spend on food in October, and which payees were the biggest?"*
+## Privacy
+
+- **Categorization:** Claude sees the payee name, the UPI ID with digits masked, payment channel, debit/credit, and the narration with every number masked. Never amounts, balances, account or reference numbers.
+- **Money plan:** Claude sees monthly totals per category, your savings rate, regular commitments, and the names of businesses you spend most with. People's names, individual transactions and account numbers are never included.
+- **Net banking:** you log in yourself. Nothing you type there is read or stored.
+- **PDF passwords** are kept in Windows Credential Manager, not in the database.
+- **Logs** (`data/logs/`) record what happened (requests, imports, errors), never amounts, narrations, names or search text.
+
+## Files and folders
+
+| Path | Contents |
+|---|---|
+| `data/expenses.db` | Your database (SQLite). Back it up by copying the file. |
+| `data/expenses-backup-*.db` | Automatic copies made before big upgrades |
+| `data/inbox/` | Statements fetched by net banking (`netbanking/`), Gmail (`gmail/`) or uploaded (`uploads/`) |
+| `data/logs/app.log`, `mcp.log` | Backend logs, rotated at 1 MB (5 kept) |
+| `.env` | Optional `ANTHROPIC_API_KEY` and overrides (see `.env.example`) |
+
+`data/` and `.env` are gitignored and never committed.
+
+## Troubleshooting
+
+- **Something failed in the app:** look at the end of `data/logs/app.log`. Errors include the full traceback.
+- **A statement won't import:** the message names the columns it looked for (Date, Narration/Description, Withdrawal/Deposit or Amount + Dr/Cr). Password-protected PDFs ask for the password.
+- **New payees stay Uncategorized:** check **Settings → Categorization** (API key credits, or `claude` signed in). They're still guessed offline in the meantime.
+- **The page looks outdated after an update:** reload. Scripts are version-stamped, so a normal reload is enough.
 
 ## Development
 
 ```powershell
 .venv\Scripts\python.exe -m pytest -q
+```
+
+```powershell
 .venv\Scripts\ruff.exe check .
 ```
 
-Tests use synthetic statements only and never call the real Claude API.
+- Tests use synthetic statements and a fake net banking site only, never real data or the real Claude API.
+- `CLAUDE.md` describes the architecture, conventions and privacy rules for working on the code with Claude Code.
+
+### Claude Code setup in this repo
+
+| Piece | What it does |
+|---|---|
+| Skill **`commit-push`** (`.claude/skills/commit-push/`) | Ask Claude to "commit and push". It runs tests and lint, checks nothing private is staged, writes the commit message, pushes and verifies. |
+| Hook **post-push cleanup** (`scripts/hooks/post_push_cleanup.py`) | After Claude does a successful `git push`: removes Python/pytest/ruff caches and upload leftovers no statement refers to, and stops headless test browsers. Never touches imported statements, the database or logs. Writes to `.claude/logs/cleanup.log`. |
+| Hook **audit log** (`scripts/hooks/audit_log.py`) | Records every tool call Claude makes in this project (tool, command or file, success) to `.claude/logs/claude-actions.jsonl`. Secrets are masked; file contents and typed text are never recorded. |
+
+The hooks are registered in `.claude/settings.json` and run in the background. To turn them off, remove them from that file, or set `"disableAllHooks": true` in `.claude/settings.local.json`.
+
+### Project layout
+
+```
+app.py                 web app (FastAPI)
+mcp_server.py          Claude Desktop tools
+config.py              categories, keyword rules, models, paths
+tracker/               core: db, normalize, parsers, importer, categorizer, llm,
+                       local_classifier, transfers, insights, advisor, service, logs,
+                       fetch/ (netbanking, gmail, secrets)
+templates/, static/    the single-page UI
+scripts/               smoke_claude.py, hooks/
+tests/                 pytest suite with synthetic data and a fake bank
+```
 
 ### Known limits
 
-- Statement layouts are found by their column headers (Date / Narration or Description / Withdrawal & Deposit, or Amount + Dr/Cr), not hard-coded per bank. They are tested against synthetic HDFC- and CUB-style files. If a real file fails to import, the error names the columns it looked for. Share just the header row and a redacted line to get the parser adjusted.
-- Text-only PDFs (no table lines) work out debit vs credit from the running balance.
-- Transaction-alert emails (near-real-time tracking between statements) are not parsed yet. Only statement attachments are.
+- Statement layouts are recognised by their column headers. They're tested on real HDFC PDFs and on synthetic HDFC- and CUB-style files. CUB's real formats haven't been tested yet.
+- Transaction-alert emails (between statements) aren't parsed yet.
+- Some merchant names arrive truncated by the bank ("Makemytrip India Pri"); that's display only.

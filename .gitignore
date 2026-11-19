@@ -6,3 +6,5 @@ __pycache__/
 .env
 data/
 credentials.json
+.claude/logs/
+.claude/settings.local.json

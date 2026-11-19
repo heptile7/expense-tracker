@@ -23,17 +23,16 @@ from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
-import logging
 from datetime import date
 
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
-from tracker import advisor, db, insights, service
+from tracker import advisor, db, insights, logs, service
 
 READ_ONLY = ToolAnnotations(read_only_hint=True)
 
-logging.basicConfig(level=logging.WARNING, stream=sys.stderr)  # stdout is the MCP channel
+logs.setup("mcp", console=False)  # to data/logs/mcp.log; stdout is the MCP channel
 db.init_db()
 
 mcp = MCPServer(

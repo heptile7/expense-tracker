@@ -150,6 +150,8 @@ def sync(account_id: int | None = None, max_messages: int = 50) -> dict:
                     summary["imported"] += 1
                     summary["new_transactions"] += result.n_new
             _record(mid, acct["id"], outcome)
+        log.info("Gmail sync for account %s: %d new emails, %d statements imported, %d new transactions, %d skipped, %d problems",
+                 acct["id"], summary["messages"], summary["imported"], summary["new_transactions"], summary["skipped"], len(summary["problems"]))
         report.append(summary)
     return {"accounts": report}
 

@@ -374,6 +374,9 @@ class NetBankingSession:
     # Browser thread
     def _set(self, state: str | None = None, message: str | None = None, progress: str | None = None):
         with self._lock:
+            if state and state != self.state:
+                log.log(logging.WARNING if state == "error" else logging.INFO, "Net banking %s (account %s): %s -> %s%s",
+                        self.bank, self.account["id"], self.state, state, f" ({message})" if state == "error" else "")
             if state:
                 self.state = state
             if message is not None:
@@ -516,6 +519,7 @@ class NetBankingSession:
         steps = finalize_steps(raw)
         if save and steps:
             save_route(self.bank, steps)
+            log.info("Net banking %s: saved a recording of %d steps (%s)", self.bank, len(steps), ", ".join(s["action"] for s in steps))
             self._set("open", f"Saved {len(steps)} steps for {BANKS[self.bank]['name']}. Next time: log in, then click “Fetch statement”.")
             return {"steps": [describe_step(s) for s in steps]}
         self._set("open", self._idle_message())
@@ -537,6 +541,7 @@ class NetBankingSession:
             if loc is None:
                 if step["action"] == "select" and step.get("month_format"):
                     continue  # a month picker that no longer offers this option: the date fields set the period
+                log.warning("Net banking %s replay: step %d of %d (%s) not found", self.bank, i, len(steps), step["action"])
                 self._set("open", f"Couldn't find step {i} ({describe_step(step)}). The bank's page may have changed. "
                                   "Finish by hand: whatever you download is still imported. Record the steps again to fix it.")
                 return {"ok": False, "failed_step": i}
@@ -545,6 +550,8 @@ class NetBankingSession:
             except Exception as exc:
                 if step["action"] == "select" and step.get("month_format"):
                     continue
+                log.warning("Net banking %s replay: step %d of %d (%s) failed: %s", self.bank, i, len(steps), step["action"],
+                            str(exc).splitlines()[0][:160])
                 self._set("open", f"Step {i} ({describe_step(step)}) didn't work: {str(exc).splitlines()[0][:120]}. "
                                   "Finish by hand: whatever you download is still imported.")
                 return {"ok": False, "failed_step": i}
@@ -557,6 +564,7 @@ class NetBankingSession:
                 break
             page.wait_for_timeout(300)
         ok = len(self.imports) > before
+        log.info("Net banking %s replay for %s..%s: %s", self.bank, start, end, "statement imported" if ok else "no download")
         self._set("open", "Statement fetched and imported." if ok else
                   "Steps done, but no statement downloaded yet. If the bank shows it on screen, click its download button yourself.")
         return {"ok": ok}
@@ -687,6 +695,10 @@ class NetBankingSession:
     def _record_import(self, name: str, info: dict) -> None:
         with self._lock:
             self.imports.append({"file": name, "at": datetime.now().isoformat(timespec="seconds"), **info})
+        if info.get("ok"):
+            log.info("Net banking %s: downloaded %s imported (%s new)", self.bank, Path(name).suffix, info.get("n_new"))
+        else:
+            log.warning("Net banking %s: download %s not imported: %s", self.bank, Path(name).suffix, info.get("error"))
 
 
 # ── One session at a time ─────────────────────────────────────────────────────

@@ -10,6 +10,7 @@ avoids recommending specific investment products, funds, stocks, insurance polic
 """
 
 import json
+import logging
 import math
 import re
 from datetime import date
@@ -17,6 +18,8 @@ from datetime import date
 import config
 from tracker import db, insights, local_classifier
 from tracker.local_classifier import looks_like_person
+
+log = logging.getLogger(__name__)
 
 DISCLAIMER = ("General budgeting guidance based only on your transactions. Not professional financial advice; "
               "for investment, insurance or tax decisions, talk to a SEBI-registered investment adviser.")
@@ -201,6 +204,9 @@ def create_plan(use_claude: bool = True) -> dict:
         cur = conn.execute("INSERT INTO money_plans (backend, plan_json) VALUES (?, ?)", (backend, json.dumps(record)))
         record["id"] = cur.lastrowid
         record["created_at"] = conn.execute("SELECT created_at FROM money_plans WHERE id = ?", (cur.lastrowid,)).fetchone()[0]
+    log.info("Money plan %s created by %s from %d months: %d actions, %d budgets%s", record["id"], backend,
+             len(snapshot["months"]), len(plan.get("actions", [])), len(plan["budgets"]),
+             f" (fell back after: {'; '.join(errors)})" if errors and backend == "Offline rules" else "")
     return record
 
 
@@ -227,6 +233,7 @@ def apply_budgets(plan_id: int) -> list[dict]:
             out.append(service.set_budget(b["category"], round(b["monthly"], -1)))
         except (ValueError, LookupError):
             continue  # category renamed or removed since the plan was made
+    log.info("Applied %d budgets from money plan %s", len(out), plan_id)
     return out
 
 

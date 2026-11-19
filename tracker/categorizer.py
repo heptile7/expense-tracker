@@ -210,6 +210,12 @@ def categorize(
     conn.executemany(
         "UPDATE merchant_rules SET hit_count = hit_count + ? WHERE id = ?", [(n, rid) for rid, n in hits.items()]
     )
+    if stats.total:
+        log.info(
+            "Categorized %d transactions %s; Claude: %d payees in %d calls via %s ($%.4f)%s",
+            stats.total, dict(stats.by_source), stats.llm_merchants, stats.llm_calls, stats.llm_backend or "-",
+            stats.llm_cost_usd, f"; error: {stats.llm_error}" if stats.llm_error else "",
+        )
     return stats
 
 

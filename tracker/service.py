@@ -1,5 +1,6 @@
 """Operations shared by the web UI and the MCP server, so both teach the categorizer the same way."""
 
+import logging
 import re
 import sqlite3
 from datetime import date
@@ -8,6 +9,8 @@ import config
 from tracker import db, importer
 from tracker.categorizer import categorize, compile_rule
 from tracker.llm import Classifier
+
+log = logging.getLogger(__name__)
 
 
 class NotFound(LookupError):
@@ -372,6 +375,7 @@ def set_category(txn_id: int, category: int | str, scope: str = "merchant") -> d
                    needs_review = 0 WHERE id = ?""",
                 (category_id, txn_id),
             )
+            log.info("Transaction %s set to category %s (one-off)", txn_id, category_id)
             return {"scope": scope, "updated": 1, "category": category_name, "counterparty": txn["counterparty"]}
 
         rule_id = upsert_user_exact_rule(conn, txn["merchant_key"], category_id)
@@ -384,6 +388,7 @@ def set_category(txn_id: int, category: int | str, scope: str = "merchant") -> d
             )
         ]
         categorize(conn, ids, use_llm=False)
+        log.info("Rule %s: payee of transaction %s now category %s; %d transactions updated", rule_id, txn_id, category_id, len(ids))
         return {
             "scope": scope,
             "updated": len(ids),

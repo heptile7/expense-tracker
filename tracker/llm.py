@@ -349,6 +349,7 @@ class ChainClassifier:
                 total.backend = out.backend
             if not out.error:
                 break  # this backend worked; anything it left open is genuinely unknown
+            log.warning("%s unavailable for categorizing (%s); trying the next route", getattr(backend, "label", "Claude"), out.error)
             errors.append(f"{getattr(backend, 'label', 'Claude')}: {out.error}")
             remaining = [it for it in remaining if it.id not in out.results]
         if errors and not total.calls:
@@ -406,15 +407,20 @@ def structured_completion(system: str, user: str, schema: dict, model: str, mode
     Returns (data, label of the backend that answered, errors from backends that didn't).
     """
     errors: list[str] = []
+    started = time.monotonic()
     if mode == "api" or (mode == "auto" and api_key_set()):
         data, err = _api_json(system, user, schema, model, effort)
         if data is not None:
+            log.info("%s answered (%s) in %.1fs", HaikuClassifier.label, model, time.monotonic() - started)
             return data, HaikuClassifier.label, errors
+        log.warning("%s unavailable (%s)", HaikuClassifier.label, err)
         errors.append(f"{HaikuClassifier.label}: {err}")
     if mode == "claude_code" or (mode == "auto" and shutil.which("claude")):
         data, err = _cli_json(system, user, schema, model, timeout)
         if data is not None:
+            log.info("%s answered (%s) in %.1fs", ClaudeCodeClassifier.label, model, time.monotonic() - started)
             return data, ClaudeCodeClassifier.label, errors
+        log.warning("%s unavailable (%s)", ClaudeCodeClassifier.label, err)
         errors.append(f"{ClaudeCodeClassifier.label}: {err}")
     return None, None, errors
 

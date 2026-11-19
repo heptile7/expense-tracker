@@ -1,6 +1,7 @@
 """parse -> pick account -> dedupe -> normalize -> insert -> categorize -> detect transfers."""
 
 import hashlib
+import logging
 import re
 import sqlite3
 from dataclasses import asdict, dataclass, field
@@ -13,6 +14,8 @@ from tracker.llm import Classifier
 from tracker.normalize import extract_ref, normalize
 from tracker.parsers import ParsedStatement, RawTxn, parse_statement
 from tracker.transfers import detect_transfers
+
+log = logging.getLogger(__name__)
 
 
 class NeedsAccount(Exception):
@@ -119,6 +122,7 @@ def import_file(
         if existing:
             result.duplicate_file = True
             result.statement_id, result.account_id, result.account_name = existing
+            log.info("Skipped a file already imported as statement %s", result.statement_id)
             return result
 
     parsed = parse_statement(path, password)  # may raise PasswordRequired / StatementError
@@ -163,4 +167,9 @@ def import_file(
         stats = categorize(conn, new_ids, classifier=classifier, use_llm=use_llm)
         result.categorize = stats.as_dict()
         result.transfers = detect_transfers(conn, new_ids)
+    log.info(
+        "Imported statement %s into account %s (%s, %s layout, source %s): %d rows, %d new, %d already present, %d transfers",
+        result.statement_id, result.account_id, path.suffix, result.layout, source,
+        result.n_rows, result.n_new, result.n_duplicates, result.transfers,
+    )
     return result
