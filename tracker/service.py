@@ -355,12 +355,12 @@ def accept_categories(txn_ids: list[int]) -> dict:
             ).fetchone()
             if not txn:
                 continue
-            if txn["category_source"] in ("llm", "fallback", "seed"):
+            if txn["category_source"] in ("llm", "local", "fallback", "seed"):
                 upsert_user_exact_rule(conn, txn["merchant_key"], txn["category_id"])
                 conn.execute(
                     """UPDATE transactions SET needs_review = 0, category_source = 'rule', confidence = 1.0,
                        rule_id = (SELECT id FROM merchant_rules WHERE match_type = 'exact' AND pattern = ? AND direction = 'any')
-                       WHERE merchant_key = ? AND category_source IN ('llm', 'fallback', 'seed') AND category_id = ?""",
+                       WHERE merchant_key = ? AND category_source IN ('llm', 'local', 'fallback', 'seed') AND category_id = ?""",
                     (txn["merchant_key"], txn["merchant_key"], txn["category_id"]),
                 )
             conn.execute("UPDATE transactions SET needs_review = 0 WHERE id = ?", (txn_id,))
@@ -369,10 +369,10 @@ def accept_categories(txn_ids: list[int]) -> dict:
 
 
 def recategorize(scope: str = "uncategorized", classifier: Classifier | None = None) -> dict:
-    """scope='uncategorized': retry Claude for Uncategorized rows. scope='all': re-apply rules everywhere."""
+    """scope='uncategorized': retry Claude for Uncategorized rows and offline guesses. scope='all': re-apply rules everywhere."""
     with db.session() as conn:
         if scope == "uncategorized":
-            ids = [r["id"] for r in conn.execute("SELECT id FROM transactions WHERE category_source = 'fallback'")]
+            ids = [r["id"] for r in conn.execute("SELECT id FROM transactions WHERE category_source IN ('fallback', 'local')")]
             stats = categorize(conn, ids, classifier=classifier, use_llm=True)
         else:
             stats = categorize(conn, None, classifier=classifier, use_llm=True)
@@ -583,9 +583,48 @@ def llm_usage(limit: int = 20) -> dict:
             "SELECT COUNT(*), COALESCE(SUM(n_items),0), COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), "
             "COALESCE(SUM(cost_usd),0) FROM llm_calls WHERE error IS NULL"
         ).fetchone()
+        sub = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(n_items),0) FROM llm_calls WHERE error IS NULL AND model LIKE 'claude-code/%'"
+        ).fetchone()
+        local = conn.execute("SELECT COUNT(*) FROM transactions WHERE category_source = 'local'").fetchone()[0]
         recent = [dict(r) for r in conn.execute("SELECT * FROM llm_calls ORDER BY id DESC LIMIT ?", (limit,))]
     return {
         "model": config.MODEL_ID,
         "calls": tot[0], "merchants": tot[1], "input_tokens": tot[2], "output_tokens": tot[3],
-        "cost_usd": round(tot[4], 6), "recent": recent,
+        "cost_usd": round(tot[4], 6),
+        "subscription_calls": sub[0], "subscription_merchants": sub[1],
+        "api_calls": tot[0] - sub[0],
+        "local_guesses": local,
+        "recent": recent,
     }
+
+
+# ── Categorizer settings ──────────────────────────────────────────────────────
+
+
+def categorizer_settings(check_cli_login: bool = False) -> dict:
+    from tracker import llm
+
+    with db.session() as conn:
+        mode = db.get_setting(conn, "categorizer", "auto")
+    cli = llm.claude_code_status() if check_cli_login else {"installed": bool(llm.shutil.which("claude"))}
+    clf = llm.build_classifier(mode)
+    chain = [b.label for b in clf.backends] if clf else []
+    return {
+        "mode": mode,
+        "modes": llm.MODES,
+        "api_key_set": llm.api_key_set(),
+        "claude_cli": cli,
+        "chain": chain + ["Offline categorizer"],
+        "model": config.MODEL_ID,
+    }
+
+
+def set_categorizer_mode(mode: str) -> dict:
+    from tracker import llm
+
+    if mode not in llm.MODES:
+        raise ValueError(f"mode must be one of: {', '.join(llm.MODES)}")
+    with db.session() as conn:
+        db.set_setting(conn, "categorizer", mode)
+    return categorizer_settings()

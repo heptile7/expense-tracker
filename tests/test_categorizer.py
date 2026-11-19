@@ -53,16 +53,30 @@ def test_low_confidence_is_flagged_for_review(tmp_path, fake_llm):
     assert murugan["category"] == "Shopping" and murugan["needs_review"]
 
 
-def test_claude_failure_leaves_uncategorized_and_retry_fixes_it(tmp_path, fake_llm):
+def test_claude_failure_falls_back_to_offline_guesses_and_retry_upgrades_them(tmp_path, fake_llm):
     _account()
     broken = FakeClassifier(error="network down")
     result = import_file(hdfc_xlsx(tmp_path / "apr.xlsx", MONTH1), classifier=broken)
     assert result.categorize["llm_error"] == "network down"
+    assert result.categorize["local_guesses"] >= 2
     kumar = _by_counterparty("Kumar Stores")[0]
-    assert kumar["category"] == "Uncategorized" and kumar["needs_review"]
+    assert (kumar["category"], kumar["category_source"]) == ("Groceries", "local")  # "STORES" -> Groceries
+    rent = _by_counterparty("Ramesh Kumar")[0]
+    assert (rent["category"], rent["category_source"]) == ("Rent", "local")  # UPI remark "RENT"
 
+    # Offline guesses aren't cached, so Claude gets them on the next re-check.
     service.recategorize("uncategorized", classifier=fake_llm)
-    assert _by_counterparty("Kumar Stores")[0]["category"] == "Groceries"
+    kumar = _by_counterparty("Kumar Stores")[0]
+    assert (kumar["category"], kumar["category_source"]) == ("Groceries", "llm")
+
+
+def test_offline_only_when_no_classifier(tmp_path):
+    _account()
+    with db.session() as conn:
+        db.set_setting(conn, "categorizer", "local")
+    result = import_file(hdfc_xlsx(tmp_path / "apr.xlsx", MONTH1), classifier=None)
+    assert result.categorize["llm_calls"] == 0
+    assert result.categorize["by_source"].get("local", 0) >= 2
 
 
 def test_merchant_correction_updates_past_and_future(tmp_path, fake_llm):

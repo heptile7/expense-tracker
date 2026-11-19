@@ -24,6 +24,14 @@ class NeedsAccount(Exception):
         super().__init__(f"Choose which account this statement belongs to{f' (detected: {hint})' if hint else ''}.")
 
 
+class AccountMismatch(NeedsAccount):
+    """You picked an account, but the statement says it belongs to a different account number."""
+
+    def __init__(self, bank: str | None, last4: str, chosen: str):
+        Exception.__init__(self, f"This statement is for the account ending {last4}, not {chosen}. Choose the right account.")
+        self.bank, self.last4 = bank, last4
+
+
 @dataclass
 class ImportResult:
     account_id: int | None = None
@@ -74,6 +82,8 @@ def resolve_account(conn: sqlite3.Connection, parsed: ParsedStatement, account_i
         row = conn.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
         if not row:
             raise ValueError(f"Account {account_id} not found")
+        if parsed.account_last4 and row["last4"] and parsed.account_last4 != row["last4"]:
+            raise AccountMismatch(parsed.bank, parsed.account_last4, row["name"])
         return row
     accounts = conn.execute("SELECT * FROM accounts").fetchall()
     if parsed.account_last4:

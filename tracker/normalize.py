@@ -55,6 +55,9 @@ _CITIES = {
     "ERODE", "TIRUPUR", "VELLORE", "KOCHI", "AHMEDABAD", "JAIPUR", "LUCKNOW", "INDIA", "MUM", "BLR", "CHN", "DEL",
 }
 
+# Words that carry no meaning about what was bought (channel markers, bank codes, cities).
+STOP_WORDS = frozenset(_NOISE_WORDS | _BANK_CODES | _CITIES | {"MERUPI", "YBLUPI", "UPIAR", "UPIOUT", "NETBANK"})
+
 _IFSC_RE = re.compile(r"^[A-Z]{4}0[A-Z0-9]{6}$")
 _VPA_RE = re.compile(r"[A-Z0-9._]{2,}@[A-Z]{2,}")
 _MASKED_RE = re.compile(r"[0-9X*]{4,}")

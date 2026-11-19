@@ -9,7 +9,7 @@ from helpers import MONTH1, MONTH2, hdfc_xlsx
 def client(monkeypatch, fake_llm):
     import app as app_module
 
-    monkeypatch.setattr("tracker.categorizer.default_classifier", lambda: fake_llm)
+    monkeypatch.setattr("tracker.categorizer.default_classifier", lambda *a, **k: fake_llm)
     monkeypatch.setattr(app_module.secrets, "get_pdf_password", lambda _id: None)
     return TestClient(app_module.app)
 

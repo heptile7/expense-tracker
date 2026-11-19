@@ -110,7 +110,7 @@ const LOADERS = {
   dashboard: () => loadDashboard(),
   transactions: () => loadTxns(true),
   review: () => loadReview(),
-  import: () => loadStatements(),
+  import: () => Promise.all([loadStatements(), loadNetbanking()]),
   rules: () => loadRules(),
   categories: () => loadCategories(),
   settings: () => Promise.all([loadAccounts(), loadGmail(), loadUsage()]),
@@ -155,9 +155,8 @@ async function loadDashboard() {
   });
   renderTrend($("#chart-trend"), d.trend);
   const review = d.needs_review ? ` ${plural(d.needs_review, "transaction")} need a look in Review.` : "";
-  const claude = state.meta?.claude_key_set
-    ? `Claude (${state.meta.model}) has categorized new payees in ${plural(d.llm_calls, "call")}, costing $${d.llm_cost_usd.toFixed(4)} so far.`
-    : "Claude isn't set up yet (add ANTHROPIC_API_KEY to .env), so new payees stay Uncategorized until you set them.";
+  const chain = state.meta?.categorizer?.chain || [];
+  const claude = `New payees go to: ${chain.join(" → ")}.${d.llm_calls ? ` Claude has answered in ${plural(d.llm_calls, "call")} (API cost so far $${d.llm_cost_usd.toFixed(4)}).` : ""}`;
   $("#dash-foot").textContent = `Spending is net of refunds booked to the same category. ${claude}${review}`;
 }
 
@@ -235,6 +234,7 @@ const HOW = {
   rule: () => "Your rule",
   seed: () => "Built-in rule",
   llm: (t) => `Claude · ${Math.round((t.confidence || 0) * 100)}%`,
+  local: (t) => `Offline guess · ${Math.round((t.confidence || 0) * 100)}%`,
   transfer: () => "Transfer detection",
   fallback: () => "Not yet",
 };
@@ -412,12 +412,15 @@ function renderImportResult(card, file, r) {
   if (s.rule) parts.push(`${s.rule} by your rules`);
   if (s.seed) parts.push(`${s.seed} by built-in rules`);
   if (s.llm) parts.push(`${s.llm} by Claude`);
+  if (s.local) parts.push(`${s.local} guessed offline`);
   if (r.transfers) parts.push(`${r.transfers} transfers between your accounts`);
   if (s.fallback) parts.push(`${s.fallback} left uncategorized`);
   const period = r.period_start ? `${fmtDate(r.period_start)} – ${fmtDate(r.period_end)}` : "";
-  const claude = r.categorize?.llm_merchants
-    ? `Claude looked at ${plural(r.categorize.llm_merchants, "new payee")} ($${(r.categorize.llm_cost_usd || 0).toFixed(4)}).` : "";
-  const warn = r.categorize?.llm_error ? `<div class="meta" style="color: var(--critical)">${esc(r.categorize.llm_error)}</div>` : "";
+  const c = r.categorize || {};
+  const claude = c.llm_calls
+    ? `${esc(c.llm_backend || "Claude")} looked at ${plural(c.llm_merchants, "new payee")}${c.llm_cost_usd ? ` ($${c.llm_cost_usd.toFixed(4)})` : ""}.` : "";
+  const warn = c.llm_error
+    ? `<div class="meta" style="color: var(--muted)">Claude wasn't available (${esc(c.llm_error)}), so new payees were guessed offline.</div>` : "";
   card.innerHTML = `<div class="title">${esc(file.name)} → ${esc(r.account_name)}</div>
     <div class="meta">${plural(r.n_new, "new transaction")}${r.n_duplicates ? `, ${r.n_duplicates} already present` : ""} · ${period}</div>
     <div class="meta">${parts.join(" · ")}${parts.length ? ". " : ""}${claude}</div>${warn}`;
@@ -444,6 +447,99 @@ async function loadStatements() {
       <td class="num">${s.n_rows ?? ""}</td><td class="num">${s.n_new ?? ""}</td><td>${esc(s.source)}</td>
       <td class="num"><button class="danger stmt-del" data-id="${s.id}" data-name="${esc(s.filename)}" data-n="${s.n_new}">Undo import</button></td></tr>`).join("")
     : `<tr><td colspan="7" class="empty">No statements imported yet.</td></tr>`;
+}
+
+// ── Net banking ──────────────────────────────────────────────────────────────
+const nb = { banks: [], timer: null, importsSeen: 0 };
+
+function nbAccount() {
+  return (state.meta?.accounts || []).find((a) => String(a.id) === $("#nb-account").value);
+}
+function nbBank(acct = nbAccount()) {
+  return nb.banks.find((b) => b.bank === (acct && ["HDFC", "CUB"].includes(acct.bank) ? acct.bank : "OTHER"));
+}
+
+async function loadNetbanking() {
+  nb.banks = await api("GET", "/api/netbanking/banks");
+  const accts = state.meta?.accounts || [];
+  const current = $("#nb-account").value;
+  $("#nb-account").innerHTML = accts.length
+    ? accts.map((a) => `<option value="${a.id}">${esc(a.name)} (${esc(a.bank)})</option>`).join("")
+    : `<option value="">Add an account in Settings first</option>`;
+  if ([...$("#nb-account").options].some((o) => o.value === current)) $("#nb-account").value = current;
+  $("#nb-open").disabled = !accts.length;
+  renderNbBank();
+  const s = await api("GET", "/api/netbanking/session");
+  renderNbSession(s);
+  if (s.state && !["none", "closed", "error"].includes(s.state)) startNbPolling();
+}
+
+function renderNbBank() {
+  const b = nbBank();
+  $("#nb-url").value = b?.login_url || "";
+  const r = b?.route;
+  $("#nb-route").innerHTML = r
+    ? `Saved steps for ${esc(b.name)} (recorded ${fmtDate(r.recorded_at.slice(0, 10))}): ${r.steps.map(esc).join(" → ")}
+       <button class="link" id="nb-forget">Forget these steps</button>`
+    : b ? `No saved steps for ${esc(b.name)} yet. Use “Record my steps” once after logging in.` : "";
+  $("#nb-forget")?.addEventListener("click", async () => {
+    if (!confirm(`Forget the saved steps for ${b.name}?`)) return;
+    nb.banks = await api("DELETE", `/api/netbanking/banks/${b.bank}/route`).catch(fail) || nb.banks;
+    renderNbBank();
+  });
+}
+
+function renderNbSession(s) {
+  const box = $("#nb-session");
+  if (!s || s.state === "none") { box.hidden = true; return; }
+  box.hidden = false;
+  const live = !["closed", "error"].includes(s.state);
+  $("#nb-message").textContent = s.message || "";
+  $("#nb-message").style.color = s.state === "error" ? "var(--critical)" : "";
+  $("#nb-progress").textContent = s.progress || "";
+  $("#nb-fetch-row").hidden = !(live && s.has_route && s.state !== "recording");
+  $("#nb-fetch").disabled = s.state === "replaying";
+  $("#nb-record").hidden = !live;
+  $("#nb-record").disabled = s.state === "replaying";
+  $("#nb-record").textContent = s.recording ? "Stop recording" : (s.has_route ? "Record my steps again" : "Record my steps");
+  $("#nb-close").hidden = !live;
+  $("#nb-open").disabled = live;
+  $("#nb-steps").innerHTML = (s.recording ? s.recorded_steps : []).map((t) => `<li>${esc(t)}</li>`).join("");
+  $("#nb-imports").innerHTML = (s.imports || []).map((i) => i.ok
+    ? `<div class="result"><div class="title">${esc(i.file)} → ${esc(i.account_name)}</div>
+       <div class="meta">${i.duplicate_file ? "Already imported before." : `${plural(i.n_new, "new transaction")}${i.n_duplicates ? `, ${i.n_duplicates} already present` : ""}${i.period_start ? ` · ${fmtDate(i.period_start)} – ${fmtDate(i.period_end)}` : ""}`}</div></div>`
+    : `<div class="result error"><div class="title">${esc(i.file)}</div><div class="meta">${esc(i.error)}</div></div>`).join("");
+  const n = (s.imports || []).filter((i) => i.ok).length;
+  if (n > nb.importsSeen) {
+    nb.importsSeen = n;
+    loadMeta().then(() => { loadStatements().catch(fail); refreshBadge(); }).catch(fail);
+  }
+  if (!live && nb.timer) {
+    stopNbPolling();
+    api("GET", "/api/netbanking/banks").then((b) => { nb.banks = b; renderNbBank(); }).catch(fail);
+  }
+}
+
+function startNbPolling() {
+  stopNbPolling();
+  nb.timer = setInterval(async () => {
+    try { renderNbSession(await api("GET", "/api/netbanking/session")); } catch (err) { stopNbPolling(); fail(err); }
+  }, 1500);
+}
+function stopNbPolling() { clearInterval(nb.timer); nb.timer = null; }
+
+async function nbAction(action, body = {}) {
+  try { renderNbSession(await api("POST", `/api/netbanking/session/${action}`, body)); } catch (err) { fail(err); }
+  if (action === "record_stop") { nb.banks = await api("GET", "/api/netbanking/banks"); renderNbBank(); }
+}
+
+function nbPeriod() {
+  const v = $("#nb-period").value;
+  if (v === "since") return {};
+  const iso = (d) => d.toISOString().slice(0, 10);
+  if (v === "custom") return { start: $("#nb-from").value, end: $("#nb-to").value };
+  const end = new Date(), start = new Date(Date.now() - (+v) * 86400000);
+  return { start: iso(start), end: iso(end) };
 }
 
 // ── Rules ────────────────────────────────────────────────────────────────────
@@ -518,12 +614,21 @@ async function loadGmail() {
 }
 
 async function loadUsage() {
-  const u = await api("GET", "/api/llm/usage");
-  const keyWarn = state.meta && !state.meta.claude_key_set
-    ? `<p class="hint" style="color: var(--critical)">ANTHROPIC_API_KEY isn't set in .env. New payees stay Uncategorized until it is (built-in and your own rules still work).</p>` : "";
-  $("#llm-usage").innerHTML = `${keyWarn}<p>Model <span class="mono">${esc(u.model)}</span> · ${plural(u.calls, "call")} · ${plural(u.merchants, "payee")} categorized ·
-    ${u.input_tokens.toLocaleString("en-IN")} input / ${u.output_tokens.toLocaleString("en-IN")} output tokens · <b>$${u.cost_usd.toFixed(4)}</b> total</p>
-    <p class="hint">Only payee names, UPI IDs and narrations with every number masked are sent. Amounts, balances and account numbers stay on this machine.</p>`;
+  const [s, u] = await Promise.all([api("GET", "/api/settings/categorizer?check=true"), api("GET", "/api/llm/usage")]);
+  $("#cat-mode").value = s.mode;
+  const cli = s.claude_cli || {};
+  const cliText = !cli.installed ? "Claude Code CLI not found"
+    : cli.logged_in ? `Claude Code CLI signed in (${esc(cli.auth_method === "claude.ai" ? "your Claude subscription" : cli.auth_method || "signed in")})`
+    : "Claude Code CLI installed but not signed in: run <span class=\"mono\">claude</span> once and log in";
+  $("#cat-status").innerHTML = `
+    <div>${s.api_key_set ? "✓" : "✗"} Claude API key ${s.api_key_set ? "set" : "not set (needs credits on console.anthropic.com)"}</div>
+    <div>${cli.installed && cli.logged_in ? "✓" : "✗"} ${cliText}</div>
+    <div>✓ Offline categorizer (always on as the last step)</div>
+    <p class="hint">Order used now: ${s.chain.map(esc).join(" → ")}. ${esc(s.modes[s.mode])}.</p>`;
+  $("#llm-usage").innerHTML = `<p>${plural(u.api_calls, "API call")} ($${u.cost_usd.toFixed(4)}) · ${plural(u.subscription_calls, "call")} through your subscription ·
+    ${plural(u.local_guesses, "transaction")} currently guessed offline</p>
+    <p class="hint">Claude only sees payee names, UPI IDs and narrations with every number masked. Amounts, balances and account numbers stay on this machine.
+    Calls through your subscription run the official Claude Code CLI under your own sign-in and count toward your plan's usage limits; that's fine for your own use, but use an API key if you ever host this for other people.</p>`;
 }
 
 // ── Events ───────────────────────────────────────────────────────────────────
@@ -574,7 +679,11 @@ function bind() {
     e.target.disabled = true;
     try {
       const r = await api("POST", "/api/recategorize", { scope: "uncategorized" });
-      toast(r.llm_error ? `Claude: ${r.llm_error}` : `Claude categorized ${r.by_source.llm || 0} of ${r.total}. $${r.llm_cost_usd.toFixed(4)}`);
+      const bits = [];
+      if (r.by_source.llm) bits.push(`${r.by_source.llm} by Claude`);
+      if (r.by_source.local) bits.push(`${r.by_source.local} guessed offline`);
+      if (r.by_source.fallback) bits.push(`${r.by_source.fallback} still uncategorized`);
+      toast(`${plural(r.total, "transaction")} re-checked: ${bits.join(", ") || "no change"}.${r.llm_error ? ` Claude unavailable: ${r.llm_error}` : ""}`, 7000);
       refreshBadge(); loadReview();
     } catch (err) { fail(err); } finally { e.target.disabled = false; }
   });
@@ -590,6 +699,35 @@ function bind() {
     if (!b || !confirm(`Remove "${b.dataset.name}" and the ${b.dataset.n} transactions it added?`)) return;
     try { const r = await api("DELETE", `/api/statements/${b.dataset.id}`); toast(`Removed ${plural(r.deleted_transactions, "transaction")}`); await loadMeta(); loadStatements(); refreshBadge(); } catch (err) { fail(err); }
   });
+
+  // Net banking
+  $("#nb-account").addEventListener("change", renderNbBank);
+  $("#nb-url").addEventListener("change", async (e) => {
+    const b = nbBank();
+    if (!b) return;
+    try { nb.banks = await api("PUT", `/api/netbanking/banks/${b.bank}`, { login_url: e.target.value }); toast(`Login page saved for ${b.name}`); }
+    catch (err) { fail(err); renderNbBank(); }
+  });
+  $("#nb-open").addEventListener("click", async () => {
+    const acct = nbAccount();
+    if (!acct) return;
+    try {
+      nb.importsSeen = 0;
+      renderNbSession(await api("POST", "/api/netbanking/session", { account_id: acct.id }));
+      startNbPolling();
+    } catch (err) { fail(err); }
+  });
+  $("#nb-period").addEventListener("change", (e) => {
+    const custom = e.target.value === "custom";
+    $("#nb-from").hidden = !custom; $("#nb-to").hidden = !custom;
+  });
+  $("#nb-fetch").addEventListener("click", () => {
+    const p = nbPeriod();
+    if ($("#nb-period").value === "custom" && (!p.start || !p.end)) { toast("Pick both dates"); return; }
+    nbAction("replay", p);
+  });
+  $("#nb-record").addEventListener("click", () => nbAction($("#nb-record").textContent === "Stop recording" ? "record_stop" : "record_start"));
+  $("#nb-close").addEventListener("click", () => nbAction("close"));
 
   // Rules
   $$("#rules-source button").forEach((b) => b.addEventListener("click", () => {
@@ -678,6 +816,15 @@ function bind() {
     if (del && confirm(`Delete ${del.dataset.name} and its ${del.dataset.n} transactions? This can't be undone.`)) {
       try { await api("DELETE", `/api/accounts/${del.dataset.id}`); toast("Account deleted"); await loadMeta(); loadAccounts(); } catch (err) { fail(err); }
     }
+  });
+
+  // Categorizer choice
+  $("#cat-mode").addEventListener("change", async (e) => {
+    try {
+      await api("PUT", "/api/settings/categorizer", { mode: e.target.value });
+      toast("Saved. Applies to the next import or re-check.");
+      await loadMeta(); loadUsage().catch(fail);
+    } catch (err) { fail(err); }
   });
 
   // Gmail

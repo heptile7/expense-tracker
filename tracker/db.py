@@ -1,5 +1,6 @@
 """SQLite schema, connection handling and seeding. Amounts are integer paise."""
 
+import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -7,7 +8,7 @@ from pathlib import Path
 
 import config
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # 2: 'local' category_source, app_settings
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
@@ -75,7 +76,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     fingerprint     TEXT NOT NULL UNIQUE,
     category_id     INTEGER REFERENCES categories(id),
     category_source TEXT NOT NULL DEFAULT 'fallback'
-                    CHECK (category_source IN ('manual', 'rule', 'seed', 'llm', 'transfer', 'fallback')),
+                    CHECK (category_source IN ('manual', 'rule', 'seed', 'llm', 'local', 'transfer', 'fallback')),
     rule_id         INTEGER REFERENCES merchant_rules(id) ON DELETE SET NULL,
     confidence      REAL,
     needs_review    INTEGER NOT NULL DEFAULT 0,
@@ -108,6 +109,11 @@ CREATE TABLE IF NOT EXISTS fetched_messages (
     status        TEXT NOT NULL,                      -- imported | duplicate | no_attachment | error
     detail        TEXT,
     processed_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key    TEXT PRIMARY KEY,
+    value  TEXT
 );
 """
 
@@ -148,10 +154,57 @@ def session() -> Iterator[sqlite3.Connection]:
 
 
 def init_db() -> None:
+    conn = connect()
+    try:
+        _migrate(conn)
+    finally:
+        conn.close()
     with session() as conn:
         conn.executescript(SCHEMA)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         _seed(conn)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    has_txns = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'transactions'").fetchone()
+    if not has_txns or version >= 2:
+        return
+    # v1 -> v2: widen the category_source CHECK. SQLite can't alter a CHECK, so rebuild the table
+    # (create new, copy, drop old, rename), as the SQLite docs prescribe.
+    ddl = re.search(r"CREATE TABLE IF NOT EXISTS transactions \(.*?\n\);", SCHEMA, re.DOTALL).group(0)
+    ddl = ddl.replace("CREATE TABLE IF NOT EXISTS transactions (", "CREATE TABLE transactions_v2 (")
+    conn.isolation_level = None
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("BEGIN")
+    try:
+        conn.execute(ddl)
+        conn.execute("INSERT INTO transactions_v2 SELECT * FROM transactions")
+        conn.execute("DROP TABLE transactions")
+        conn.execute("ALTER TABLE transactions_v2 RENAME TO transactions")
+        conn.execute("PRAGMA user_version = 2")
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def get_setting(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:
+    row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone() if _has_settings(conn) else None
+    return row["value"] if row and row["value"] is not None else default
+
+
+def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+
+
+def _has_settings(conn: sqlite3.Connection) -> bool:
+    return bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'").fetchone())
 
 
 def _seed(conn: sqlite3.Connection) -> None:

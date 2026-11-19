@@ -9,9 +9,11 @@ Everything runs on your machine (`127.0.0.1` only), and the data lives in `data/
 ```powershell
 uv venv --python 3.12 .venv
 uv pip install --python .venv\Scripts\python.exe -r requirements.txt
-copy .env.example .env      # then put your ANTHROPIC_API_KEY in .env
+copy .env.example .env      # optional: put an ANTHROPIC_API_KEY with credits in .env
 .venv\Scripts\python.exe app.py
 ```
+
+No API credits? If you have a Claude Pro/Max plan and Claude Code installed, sign in once with `claude`. The app then uses your subscription automatically. Without either, the offline categorizer still works.
 
 Open http://127.0.0.1:8765. The steps after that:
 
@@ -40,7 +42,17 @@ The first match wins:
 | 3 | **Built-in rules** | About 250 keywords: Swiggy, Zomato, Uber, IRCTC, TANGEDCO, ATM, SIP… |
 | 4 | **Claude's earlier answer** | Cached per payee, so a payee is only ever sent once. |
 | 5 | **Claude Haiku 5.5** | All new payees from an import go in one batched call. Results with confidence below 60% are flagged for review. |
-| 6 | **Uncategorized** | Flagged for review. Use "Ask Claude again" to retry. |
+| 6 | **Offline guess** | A small naive-Bayes model on the words in the payee name, UPI ID and UPI remark, trained on your corrections plus a built-in word list (MESS → Food, TAILORS → Personal Care…). Phone-number UPI IDs default to Payments to People. Not cached, so Claude can improve these later. |
+| 7 | **Uncategorized** | Flagged for review. Use "Categorize again" to retry. |
+
+**Which Claude is used** is set in **Settings → Categorization**:
+
+- **Automatic** (the default) tries, in order: the Claude API (if `ANTHROPIC_API_KEY` is set), then your Claude subscription through the Claude Code CLI, then the offline guesser.
+- **Claude via your subscription** runs the official `claude` CLI in print mode, signed in with your own Pro/Max account. It uses no tools, no MCP servers and no settings files, and nothing is saved as a session. It counts toward your plan's usage limits; there's no per-token bill. This is fine for your own use. If you ever host the app for other people, use an API key instead.
+- **Claude API key** needs credits on console.anthropic.com.
+- **Offline only** sends nothing anywhere.
+
+If one route fails (no API credits, usage limit reached, no network), the next one takes over.
 
 **Correcting a category** asks whether to apply it to *all transactions from that payee, now and in future* or *only this one*.
 
@@ -50,6 +62,23 @@ The first match wins:
 Transfers between your accounts (a debit in one matched by a credit in the other within 2 days), credit card bill payments and investments are kept out of spending totals.
 
 **What is sent to Claude:** the payee name, UPI ID, channel, debit/credit, and the narration with every number masked. Amounts, balances, account numbers and reference numbers are never sent. A typical import of 30 new payees costs about $0.001.
+
+## Fetch from net banking (assisted login)
+
+**Import → Fetch from net banking**, pick the account, then click **Open net banking**:
+
+1. A browser window opens at your bank's login page. It's your installed Edge or Chrome, with a fresh profile that's thrown away afterwards.
+2. **You log in yourself** (user ID, password, OTP, captcha). The app never reads or stores any of it.
+3. Download a statement as usual, Excel preferred. It's imported into the chosen account automatically. If the statement belongs to a different account number, it goes to the matching account instead.
+4. **To make the next fetch automatic**, click **Record my steps** after logging in, before you start navigating. Then open the statement page, choose the account, period and format, and download. The recording stops by itself when the file arrives.
+
+   Next time: log in, choose a period ("since the last transaction", last 30/90 days or custom dates), and click **Fetch statement**. The app replays your clicks with the new dates filled in.
+
+The recorder keeps only clicks, dropdown choices and date fields. It ignores password, OTP, PIN, user-ID, card and phone fields, and clicks inside calendar pop-ups. If the bank changes its pages, the app says which step it couldn't find. You then finish by hand (the download is still imported) and record again.
+
+The login page addresses are editable: the banks moved to RBI's `.bank.in` domains, so check that the default opens the real login page. The app adds no anti-bot workarounds. If a bank refuses to work in an automated browser window, download the statement in your normal browser and use the regular import. Automated access may also go against your bank's terms of use.
+
+MPIN-based access to the banks' mobile apps is intentionally not supported. An MPIN is tied to the bank's app on your registered phone, and using it elsewhere would mean defeating the bank's device binding.
 
 ## Gmail (optional, read-only)
 

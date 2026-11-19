@@ -25,7 +25,7 @@ class FakeClassifier:
     def __call__(self, items, categories, examples):
         self.calls.append({"items": items, "categories": categories, "examples": examples})
         out = LLMBatchOutcome(calls=1, input_tokens=100 * len(items), output_tokens=20 * len(items))
-        out.call_log.append(("fake-model", len(items), out.input_tokens, out.output_tokens, "end_turn"))
+        out.call_log.append(("fake-model", len(items), out.input_tokens, out.output_tokens, "end_turn", 0.0))
         if self.error:
             return LLMBatchOutcome(error=self.error)
         for it in items:
@@ -47,7 +47,7 @@ def temp_db(tmp_path, monkeypatch):
     db.init_db()
     # Never hit the real Claude API from unit tests.
     disabled = FakeClassifier(error="LLM disabled in tests")
-    monkeypatch.setattr("tracker.categorizer.default_classifier", lambda: disabled)
+    monkeypatch.setattr("tracker.categorizer.default_classifier", lambda *a, **k: disabled)
     yield path
 
 

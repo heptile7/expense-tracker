@@ -64,6 +64,7 @@
         <option value="rule">Your rules</option>
         <option value="manual">You, one-off</option>
         <option value="llm">Claude</option>
+        <option value="local">Offline guess</option>
         <option value="seed">Built-in rules</option>
         <option value="transfer">Transfer detection</option>
         <option value="fallback">Uncategorized</option>
@@ -82,11 +83,11 @@
 
   <!-- Review -->
   <section id="tab-review" class="tab">
-    <p class="lead">Claude's low-confidence picks and anything still uncategorized. Fix a category to teach it, or accept Claude's pick: that turns it into your own rule for the payee.</p>
+    <p class="lead">Low-confidence picks (from Claude or the offline categorizer) and anything still uncategorized. Fix a category to teach the app, or accept a pick: that turns it into your own rule for the payee.</p>
     <div class="toolbar wrap">
       <label class="check"><input type="checkbox" id="rv-all"> Select all</label>
       <button id="rv-accept" class="primary" disabled>Accept selected</button>
-      <button id="rv-retry" class="secondary">Ask Claude again for uncategorized</button>
+      <button id="rv-retry" class="secondary">Categorize again (uncategorized and guesses)</button>
     </div>
     <div class="table-wrap">
       <table class="txns">
@@ -98,6 +99,41 @@
 
   <!-- Import -->
   <section id="tab-import" class="tab">
+    <div class="card" id="nb-card">
+      <h2>Fetch from net banking</h2>
+      <div class="form-row wrap">
+        <label>Account <select id="nb-account" aria-label="Account to fetch"></select></label>
+        <button class="primary" id="nb-open">Open net banking</button>
+      </div>
+      <div class="form-row wrap">
+        <label class="grow">Login page <input id="nb-url" class="grow" type="url" spellcheck="false" aria-label="Login page address"></label>
+      </div>
+      <div id="nb-route" class="hint"></div>
+      <div id="nb-session" class="nb-session" hidden>
+        <div id="nb-message" class="status-line"></div>
+        <div id="nb-progress" class="hint"></div>
+        <div class="form-row wrap" id="nb-fetch-row" hidden>
+          <label>Period
+            <select id="nb-period" aria-label="Period">
+              <option value="since">Since the last transaction</option>
+              <option value="30">Last 30 days</option>
+              <option value="90">Last 90 days</option>
+              <option value="custom">Custom dates</option>
+            </select>
+          </label>
+          <input type="date" id="nb-from" aria-label="From date" hidden>
+          <input type="date" id="nb-to" aria-label="To date" hidden>
+          <button class="primary" id="nb-fetch">Fetch statement</button>
+        </div>
+        <div class="toolbar wrap">
+          <button class="secondary" id="nb-record">Record my steps</button>
+          <button class="ghost" id="nb-close">Close browser</button>
+        </div>
+        <ol id="nb-steps" class="steps"></ol>
+        <div id="nb-imports" class="results"></div>
+      </div>
+      <p class="hint">A browser window opens at your bank (your installed Edge or Chrome, with a fresh profile that's thrown away afterwards). You log in there yourself; the app never reads or stores your user ID, password or OTP. Any statement you download in that window is imported into the chosen account.</p>
+    </div>
     <div class="card">
       <h2>Import statements</h2>
       <div class="form-row">
@@ -208,7 +244,18 @@
       <p class="hint">Read-only access. Statements found by each account's Gmail search are downloaded and imported, using the PDF password saved for that account. Setup steps are in the README.</p>
     </div>
     <div class="card">
-      <h2>Claude usage</h2>
+      <h2>Categorization</h2>
+      <div class="form-row wrap">
+        <label>New payees are categorized by
+          <select id="cat-mode" aria-label="Categorizer">
+            <option value="auto">Automatic: best available</option>
+            <option value="claude_code">Claude via your subscription (Claude Code)</option>
+            <option value="api">Claude API key</option>
+            <option value="local">Offline only</option>
+          </select>
+        </label>
+      </div>
+      <div id="cat-status" class="status-line"></div>
       <div id="llm-usage"></div>
     </div>
   </section>

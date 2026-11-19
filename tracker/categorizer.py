@@ -6,7 +6,9 @@ Priority (first match wins):
   3. seed rules     shipped keyword list, in config order
   4. llm cache      an earlier Claude answer for this merchant_key
   5. Claude Haiku   one call for all remaining *unique* merchant keys, result cached as a rule
-  6. fallback       Uncategorized, flagged for review
+                    (Claude API, or your Claude subscription via the CLI: see llm.py)
+  6. local guess    offline naive Bayes trained on your corrections (local_classifier.py), not cached
+  7. fallback       Uncategorized, flagged for review
 """
 
 import logging
@@ -17,7 +19,8 @@ from dataclasses import dataclass, field
 
 import config
 from tracker import db
-from tracker.llm import Classifier, LLMItem, default_classifier
+from tracker.llm import Classifier, LLMItem, default_classifier, mask_upi_id
+from tracker.local_classifier import build_model as build_local_model
 from tracker.normalize import mask_for_llm
 
 log = logging.getLogger(__name__)
@@ -97,6 +100,8 @@ class CategorizeStats:
     llm_calls: int = 0
     llm_cost_usd: float = 0.0
     llm_error: str | None = None
+    llm_backend: str | None = None
+    local_guesses: int = 0
 
     def as_dict(self) -> dict:
         return {
@@ -106,6 +111,8 @@ class CategorizeStats:
             "llm_calls": self.llm_calls,
             "llm_cost_usd": round(self.llm_cost_usd, 6),
             "llm_error": self.llm_error,
+            "llm_backend": self.llm_backend,
+            "local_guesses": self.local_guesses,
         }
 
 
@@ -140,8 +147,13 @@ def categorize(
     txn_ids: list[int] | None = None,
     classifier: Classifier | None = None,
     use_llm: bool = True,
+    use_local: bool = True,
 ) -> CategorizeStats:
-    """(Re)categorize the given transactions, or all non-manual ones when txn_ids is None."""
+    """(Re)categorize the given transactions, or all non-manual ones when txn_ids is None.
+
+    classifier: Claude backend to use; None picks the one chosen in Settings (or none).
+    use_local: guess whatever is still open with the offline categorizer.
+    """
     stats = CategorizeStats()
     sql = "SELECT id, narration_raw, merchant_key, direction, channel, counterparty, vpa, category_source FROM transactions WHERE category_source != 'manual'"
     params: list = []
@@ -171,7 +183,11 @@ def categorize(
             pending[row["merchant_key"]].append(row)
 
     if pending and use_llm:
-        _categorize_with_llm(conn, pending, classifier or default_classifier(), stats, hits)
+        clf = classifier if classifier is not None else default_classifier(conn)
+        if clf is not None:
+            _categorize_with_llm(conn, pending, clf, stats, hits)
+    if pending and use_local:
+        _categorize_locally(conn, pending, stats)
 
     unc = db.uncategorized_id(conn)
     for group in pending.values():
@@ -196,7 +212,7 @@ def _categorize_with_llm(conn, pending: dict[str, list], classifier: Classifier,
                 direction=sample["direction"],
                 channel=sample["channel"] or "OTHER",
                 payee=key.partition(":")[2],
-                upi_id=sample["vpa"],
+                upi_id=mask_upi_id(sample["vpa"]),
                 narration=mask_for_llm(sample["narration_raw"]),
             )
         )
@@ -208,8 +224,8 @@ def _categorize_with_llm(conn, pending: dict[str, list], classifier: Classifier,
     stats.llm_calls = outcome.calls
     stats.llm_cost_usd = outcome.cost_usd
     stats.llm_error = outcome.error
-    for model, n_items, in_tok, out_tok, stop in outcome.call_log:
-        cost = (in_tok * config.PRICE_INPUT_PER_MTOK + out_tok * config.PRICE_OUTPUT_PER_MTOK) / 1_000_000
+    stats.llm_backend = outcome.backend
+    for model, n_items, in_tok, out_tok, stop, cost in outcome.call_log:
         conn.execute(
             "INSERT INTO llm_calls (model, n_items, input_tokens, output_tokens, cost_usd, stop_reason) VALUES (?, ?, ?, ?, ?, ?)",
             (model, n_items, in_tok, out_tok, cost, stop),
@@ -231,6 +247,22 @@ def _categorize_with_llm(conn, pending: dict[str, list], classifier: Classifier,
             stats.by_source["llm"] += 1
             if rule_id:
                 hits[rule_id] += 1
+
+
+def _categorize_locally(conn, pending: dict[str, list], stats: CategorizeStats) -> None:
+    """Offline guesses for payees no rule or Claude answered. Not cached: Claude can improve them later."""
+    model = build_local_model(conn)
+    by_name = {r["name"]: r["id"] for r in conn.execute("SELECT id, name FROM categories WHERE is_active = 1")}
+    for key in list(pending):
+        sample = pending[key][0]
+        guess = model.guess(key.partition(":")[2], sample["narration_raw"], sample["vpa"], sample["direction"], sample["channel"])
+        if not guess or guess.category not in by_name:
+            continue
+        low = guess.confidence < config.LOW_CONFIDENCE
+        for row in pending.pop(key):
+            _apply(conn, row["id"], by_name[guess.category], "local", None, guess.confidence, low)
+            stats.by_source["local"] += 1
+            stats.local_guesses += 1
 
 
 def _upsert_llm_rule(conn, merchant_key: str, category_id: int, confidence: float) -> int | None:

@@ -20,7 +20,7 @@ from fastapi.templating import Jinja2Templates
 
 import config
 from tracker import db, service
-from tracker.fetch import gmail, secrets
+from tracker.fetch import gmail, netbanking, secrets
 from tracker.importer import NeedsAccount
 from tracker.parsers import SUPPORTED, PasswordRequired, StatementError
 
@@ -62,6 +62,7 @@ def meta():
         "months": service.available_months(),
         "model": config.MODEL_ID,
         "claude_key_set": bool(os.getenv("ANTHROPIC_API_KEY")),
+        "categorizer": service.categorizer_settings(),
     }
 
 
@@ -285,6 +286,59 @@ def gmail_sync(body: dict = Body(default={})):
         return gmail.sync(body.get("account_id"))
     except RuntimeError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+# ── Assisted net banking ─────────────────────────────────────────────────────
+
+
+@app.get("/api/netbanking/banks")
+def netbanking_banks():
+    return netbanking.banks_info()
+
+
+@app.put("/api/netbanking/banks/{bank}")
+def netbanking_set_bank(bank: str, body: dict = Body(...)):
+    if bank not in netbanking.BANKS:
+        raise service.NotFound(f"Unknown bank {bank}")
+    netbanking.set_login_url(bank, body.get("login_url", ""))
+    return netbanking.banks_info()
+
+
+@app.delete("/api/netbanking/banks/{bank}/route")
+def netbanking_forget_route(bank: str):
+    netbanking.forget_route(bank)
+    return netbanking.banks_info()
+
+
+@app.post("/api/netbanking/session")
+def netbanking_start(body: dict = Body(...)):
+    return netbanking.start_session(int(body["account_id"]))
+
+
+@app.get("/api/netbanking/session")
+def netbanking_status():
+    return netbanking.session_status() or {"state": "none"}
+
+
+@app.post("/api/netbanking/session/{action}")
+def netbanking_action(action: str, body: dict = Body(default={})):
+    if action == "replay":
+        return netbanking.session_command("replay", start=body.get("start"), end=body.get("end"))
+    if action == "record_stop":
+        return netbanking.session_command("record_stop", save=bool(body.get("save", True)))
+    if action in ("record_start", "close"):
+        return netbanking.session_command(action)
+    raise service.NotFound(f"Unknown action {action}")
+
+
+@app.get("/api/settings/categorizer")
+def get_categorizer(check: bool = False):
+    return service.categorizer_settings(check_cli_login=check)
+
+
+@app.put("/api/settings/categorizer")
+def put_categorizer(body: dict = Body(...)):
+    return service.set_categorizer_mode(body.get("mode", "auto"))
 
 
 @app.get("/api/llm/usage")

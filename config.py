@@ -60,6 +60,33 @@ DEFAULT_CATEGORIES: list[tuple[str, str, str, str]] = [
     (UNCATEGORIZED, "expense", "#ced4da", "Could not be determined"),
 ]
 
+# ── Local (offline) categorizer ───────────────────────────────────────────────
+# Business-type words common in Indian payee names and UPI remarks. The local
+# categorizer treats each word as weak evidence for a category; your own
+# corrections count for much more. Words match whole words in the payee name,
+# UPI ID or remark. (category, direction, words)
+LOCAL_LEXICON: list[tuple[str, str, list[str]]] = [
+    ("Groceries", "debit", ["STORES", "STORE", "SUPERMARKET", "MART", "KIRANA", "PROVISIONS", "PROVISION", "FRUITS", "VEGETABLES", "VEGETABLE", "DAIRY", "MILK", "TRADERS", "GROCERY", "GROCERIES", "DEPARTMENTAL"]),
+    ("Food & Dining", "debit", ["MESS", "HOTEL", "BHAVAN", "CAFE", "RESTAURANT", "BIRYANI", "SWEETS", "BAKERY", "BAKES", "TEA", "COFFEE", "JUICE", "CANTEEN", "DHABA", "FOODS", "FOOD", "KITCHEN", "PIZZA", "CHICKEN", "TIFFIN", "ICECREAM", "DARSHINI", "SNACKS", "LUNCH", "DINNER", "BREAKFAST", "PARCEL"]),
+    ("Health", "debit", ["MEDICAL", "MEDICALS", "PHARMACY", "PHARMA", "CLINIC", "HOSPITAL", "HOSPITALS", "DENTAL", "DIAGNOSTICS", "DIAGNOSTIC", "LABS", "HEALTHCARE", "OPTICALS", "EYE", "MEDICINE", "MEDICINES", "DOCTOR", "NURSING"]),
+    ("Personal Care", "debit", ["SALON", "SPA", "BEAUTY", "PARLOUR", "PARLOR", "TAILOR", "TAILORS", "TAILORING", "STITCHING", "GYM", "FITNESS", "UNISEX", "HAIRCUT", "COSMETICS"]),
+    ("Shopping", "debit", ["TEXTILES", "TEXTILE", "SILKS", "FASHION", "FASHIONS", "GARMENTS", "FOOTWEAR", "ELECTRONICS", "MOBILES", "BOUTIQUE", "JEWELLERS", "JEWELLERY", "COLLECTIONS", "STATIONERY", "STATIONERS", "GIFTS", "TOYS", "FURNITURE"]),
+    ("Transport", "debit", ["AUTO", "MOTORS", "GARAGE", "TYRES", "TYRE", "SERVICE CENTER", "CABS", "TAXI", "PARKING", "TOLL", "BIKE", "WORKSHOP"]),
+    ("Fuel", "debit", ["PETROL", "FUELS", "FILLING", "BUNK", "PETROLEUM", "DIESEL"]),
+    ("Household & Services", "debit", ["ELECTRICALS", "HARDWARE", "HARDWARES", "PLUMBING", "PLUMBER", "ELECTRICIAN", "LAUNDRY", "DRYCLEAN", "IRONING", "CARPENTER", "PAINTS", "MAID", "COOK", "SERVANT", "REPAIR", "REPAIRS", "CLEANING", "WATERCAN"]),
+    ("Bills & Utilities", "debit", ["ELECTRICITY", "BROADBAND", "FIBERNET", "FIBER", "CABLE", "DTH", "RECHARGE", "PREPAID", "POSTPAID", "EB", "WATER", "GAS"]),
+    ("Gifts & Donations", "debit", ["FLOWER", "FLOWERS", "POOJA", "PUJA", "TEMPLE", "TRUST", "DEVASTHANAM", "KOVIL", "CHURCH", "MOSQUE", "DONATION", "CHARITY", "GIFT", "OFFERING"]),
+    ("Education", "debit", ["SCHOOL", "COLLEGE", "ACADEMY", "TUITION", "COACHING", "INSTITUTE", "CLASSES", "BOOKS", "BOOK", "FEES", "EXAM"]),
+    ("Travel", "debit", ["TRAVELS", "TOURS", "TOURISM", "HOLIDAYS", "RESORT", "RESORTS", "LODGE", "RESIDENCY", "INN", "TICKET", "TICKETS"]),
+    ("Entertainment & Subscriptions", "debit", ["CINEMAS", "CINEMA", "THEATRE", "THEATER", "GAMES", "GAMING", "MOVIE", "SUBSCRIPTION"]),
+    ("Rent", "debit", ["RENT", "RENTAL", "HOUSE RENT", "ADVANCE"]),
+    ("Insurance", "debit", ["INSURANCE", "ASSURANCE", "PREMIUM"]),
+    ("EMI & Loans", "debit", ["FINANCE", "FINSERV", "FINANCIAL", "CAPITAL", "LOAN", "EMI", "CREDIT"]),
+    ("Investments", "any", ["SECURITIES", "BROKING", "MUTUAL", "ASSET", "INVESTMENT", "INVESTMENTS"]),
+    ("Salary", "credit", ["TECHNOLOGIES", "TECHNOLOGY", "SOLUTIONS", "SOFTWARE", "INFOTECH", "SYSTEMS", "CONSULTING", "CONSULTANCY", "LABS", "PAYROLL", "SALARY", "SAL"]),
+    ("Refunds & Cashback", "credit", ["REFUND", "REVERSAL", "CASHBACK", "RETURN"]),
+]
+
 # ── Seed rules ────────────────────────────────────────────────────────────────
 # Keyword rules shipped with the app so common merchants never need an LLM call.
 # Evaluated in this order (first match wins), so specific entries come first.
