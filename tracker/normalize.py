@@ -84,7 +84,7 @@ def _letters(s: str) -> int:
 # Words dropped from inside a payee name (whole-token noise like PAY/PAYMENT is kept in names: "AMAZON PAY").
 _NAME_NOISE_WORDS = {
     "UPI", "POS", "DEBIT", "ECOM", "PURCHASE", "DC", "SI", "ME", "PCD", "CRV", "IN", "IND", "NA", "INR", "CR", "DR",
-    "NEFT", "IMPS", "RTGS", "ACH", "NACH", "ATW", "NWD", "EAW",
+    "NEFT", "IMPS", "RTGS", "ACH", "NACH", "ATW", "NWD", "EAW", "AUTOPAY", "MANDATE",
 }
 
 
@@ -102,17 +102,20 @@ def _is_noise_token(tok: str) -> bool:
     if _letters(t) < 3 or "@" in t or _IFSC_RE.match(t) or t in _NOISE_WORDS or t in _BANK_CODES:
         return True
     digits = sum(ch.isdigit() for ch in t)
-    if digits and digits / len(t) > 0.4:
-        return True
+    if " " not in t and digits and digits / len(t) > 0.4:
+        return True  # a single code-like word; multi-word segments ("12:34:56 1234567890 WWW AMAZON IN") are judged per word
     # Every word is noise (e.g. "416021XXXXXX1234 POS DEBIT")
     return all(_is_noise_word(w) for w in t.split())
 
 
 def _clean_name(raw: str) -> str:
     words = [w.strip(" .,;*#()") for w in raw.split()]
-    words = [w for w in words if w and not _is_noise_word(w)]
-    while len(words) > 1 and words[-1] in _CITIES:
+    words = [w for w in words if w and not _is_noise_word(w) and w != "WWW"]
+    # Card terminals often wrap the merchant in a city and the acquiring bank: "BANGALORE SWIGGY ... HDFC BANK"
+    while len(words) > 1 and (words[-1] in _CITIES or words[-1] in _BANK_CODES or words[-1] in {"BANK", "BAN", "BA"}):
         words.pop()
+    while len(words) > 1 and words[0] in _CITIES:
+        words.pop(0)
     name = " ".join(words)
     name = re.sub(r"\d{4,}", " ", name)
     name = re.sub(r"[^A-Z0-9&.' ]", " ", name)

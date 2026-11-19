@@ -26,6 +26,9 @@ __all__ = ["ParsedStatement", "PasswordRequired", "RawTxn", "StatementError", "p
 log = logging.getLogger(__name__)
 
 SUPPORTED = {".xls", ".xlsx", ".xlsm", ".csv", ".txt", ".pdf"}
+# Max gap (points) between letters of the same word. pdfplumber's default of 3 glues words together
+# in HDFC's small-font statements ("ACHD-INDIANCLEARINGCORP"); 1.5 keeps the spaces.
+PDF_X_TOLERANCE = 1.5
 
 
 def parse_statement(path: str | Path, password: str | None = None) -> ParsedStatement:
@@ -115,8 +118,8 @@ def _parse_pdf(path: Path, password: str | None) -> ParsedStatement | None:
         rows: list[list] = []
         texts: list[str] = []
         for page in pdf.pages:
-            texts.append(page.extract_text() or "")
-            for table in page.extract_tables():
+            texts.append(page.extract_text(x_tolerance=PDF_X_TOLERANCE) or "")
+            for table in page.extract_tables({"text_x_tolerance": PDF_X_TOLERANCE}):
                 rows.extend([[(c or "").replace("\n", " ") for c in r] for r in table])
     full_text = "\n".join(texts)
     parsed = parse_grid(rows, "pdf-table") if rows else None

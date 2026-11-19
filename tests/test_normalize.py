@@ -18,6 +18,14 @@ from tracker.normalize import extract_ref, mask_for_llm, normalize
         ("ACH D- BAJAJ FINANCE LTD-1234567", "debit", "ACH", "D:BAJAJ FINANCE"),
         ("FT - CR - 50100123456789 - JOHN DOE", "credit", "TRANSFER", "C:JOHN DOE"),
         ("BIL/ONL/000123456789/AIRTEL/AIRTEL PREPAID", "debit", "OTHER", "D:AIRTEL"),
+        # HDFC PDF statements (2026 layout), numbers made up
+        ("POS 416021XXXXXX1234 612345678901 05APR6 1 12:34:56 6123456789 WWW AMAZON IN", "debit", "CARD", "D:AMAZON"),
+        ("POS 416021XXXXXX1234 612345678901 05MAY6 1 12:34:56 BANGALORE SWIGGY LIMITED", "debit", "CARD", "D:SWIGGY"),
+        ("POS 416021XXXXXX1234 612345678901 05JUN6 1 12:34:56 BANGALORE INSTAMART HDFC BAN", "debit", "CARD", "D:INSTAMART"),
+        ("CRV POS 416021******1234 WWW AMAZON", "credit", "CARD", "C:AMAZON"),
+        ("ACH D- INDIAN CLEARING CORP-1234SZDZKOP5", "debit", "ACH", "D:INDIAN CLEARING CORP"),
+        ("NEFT CR-BOFA0MM6012-ACME SOLUTIONS PVT LTD-TEST USER HDFC BANK LIMITED", "credit", "NEFT", "C:ACME SOLUTIONS"),
+        ("DC 4160211234561234 AUTOPAY SI-TAD", "debit", "OTHER", "D:TAD"),
         # Slash-delimited (CUB and most other banks)
         ("UPI/DR/412345678901/SWIGGY/YESB/swiggy@yesbank/Payme", "debit", "UPI", "D:SWIGGY"),
         ("UPI/CR/412345678901/AMAZON PAY INDIA PRIVA/UTIB/amazonpay@axis/refund", "credit", "UPI", "C:AMAZON PAY INDIA"),

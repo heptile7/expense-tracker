@@ -36,9 +36,10 @@ from tracker.parsers import SUPPORTED, PasswordRequired, StatementError
 log = logging.getLogger(__name__)
 
 BANKS = {
-    # Banks moved to RBI's .bank.in domains in 2025; old hostnames may redirect. Editable in the app.
-    "HDFC": {"name": "HDFC Bank NetBanking", "login_url": "https://netbanking.hdfcbank.com/netbanking/"},
-    "CUB": {"name": "City Union Bank Net Banking", "login_url": "https://cityunionbank.bank.in/"},
+    # Banks moved to RBI's .bank.in domains; checked Nov 2026 (the old netbanking.hdfcbank.com redirects
+    # to now.hdfc.bank.in). CUB's older system is at www.onlinebanking.cub.bank.in. Editable in the app.
+    "HDFC": {"name": "HDFC Bank NetBanking", "login_url": "https://now.hdfc.bank.in/"},
+    "CUB": {"name": "CUB All in One", "login_url": "https://online.cub.bank.in/"},
     "OTHER": {"name": "Net banking", "login_url": ""},
 }
 IDLE_TIMEOUT = 20 * 60  # close the browser after 20 minutes without activity
@@ -53,7 +54,17 @@ RECORDER_JS = r"""
   const DATE_RE = /^\s*(\d{1,2}[\/\-. ](\d{1,2}|[A-Za-z]{3})[\/\-. ]\d{2,4}|\d{4}-\d{2}-\d{2})\s*$/;
   const esc = (s) => (window.CSS && CSS.escape) ? CSS.escape(s) : s;
   const unique = (sel) => { try { return document.querySelectorAll(sel).length === 1; } catch (e) { return false; } };
-  const stable = (v) => v && v.length < 60 && !/\d{3,}/.test(v);
+  // Auto-numbered ids (bb_input_7, mat-select-12) change between visits: never rely on them.
+  const stable = (v) => v && v.length < 60 && !/\d{3,}/.test(v) && !/(^|[_\-:])\d+$/.test(v);
+  function fieldLabel(el) {
+    let t = '';
+    if (el.labels && el.labels.length) t = el.labels[0].innerText;
+    if (!t && el.getAttribute('aria-labelledby')) {
+      t = el.getAttribute('aria-labelledby').split(/\s+/).map((id) => (document.getElementById(id) || {}).innerText || '').join(' ');
+    }
+    t = (t || el.getAttribute('aria-label') || el.placeholder || '').trim().replace(/\s+/g, ' ').replace(/\s*\*$/, '');
+    return t && t.length <= 60 && !/\d{5,}/.test(t) ? t : '';
+  }
   const send = (p) => { try { if (window.__etEvent) window.__etEvent(Object.assign({ frame: window.name || '', path: location.pathname }, p)); } catch (e) {} };
   const isSensitive = (el) => el.type === 'password' ||
     SENSITIVE.test([el.name, el.id, el.placeholder, el.getAttribute('aria-label'), el.autocomplete].join(' '));
@@ -85,7 +96,8 @@ RECORDER_JS = r"""
     const t = (tag === 'select' || (tag === 'input' && !['submit', 'button'].includes(el.type))) ? '' : text(el);
     if (t) c.push(tag + ':text-is(' + JSON.stringify(t) + ')');
     c.push(cssPath(el));
-    return { tag: tag, candidates: c, label: t || name || el.id || tag };
+    const fl = ['input', 'select', 'textarea'].includes(tag) ? fieldLabel(el) : '';
+    return { tag: tag, candidates: c, field_label: fl, label: t || fl || (stable(name) ? name : '') || (stable(el.id) ? el.id : '') || tag };
   }
   const reported = new WeakMap();
   function reportDates() {
@@ -102,6 +114,8 @@ RECORDER_JS = r"""
   }
   const PICKER = '[class*="datepicker" i],[class*="calendar" i],[class*="picker" i],[id*="calendar" i],[id*="datepicker" i]';
   document.addEventListener('click', (e) => {
+    // Only your own clicks: pages also click hidden links by script to start a download.
+    if (!e.isTrusted) return;
     // Clicks inside a calendar pop-up pick a specific day; the date field's value is recorded instead.
     if (e.target.closest && e.target.closest(PICKER) && e.target.tagName !== 'INPUT') { setTimeout(reportDates, 0); return; }
     const el = e.target.closest('a,button,input[type=submit],input[type=button],input[type=image],input[type=radio],input[type=checkbox],[role=button],[role=tab],[role=menuitem],[role=option],[onclick],li,td,label,span,img') || e.target;
@@ -135,7 +149,19 @@ def _route_key(bank: str) -> str:
 def get_route(bank: str) -> dict | None:
     with db.session() as conn:
         raw = db.get_setting(conn, _route_key(bank))
-    return json.loads(raw) if raw else None
+    if not raw:
+        return None
+    route = json.loads(raw)
+    # Routes recorded by earlier versions: detect month pickers, drop script-made download-link clicks.
+    steps = []
+    for s in route["steps"]:
+        if s["action"] == "click" and s.get("candidates") in (["html > body > a"], ["body > a"]):
+            continue
+        if s["action"] == "select" and "month_format" not in s:
+            s["month_format"] = month_option_format(s.get("option_text") or "")
+        steps.append(s)
+    route["steps"] = steps
+    return route
 
 
 def save_route(bank: str, steps: list[dict]) -> dict:
@@ -183,6 +209,8 @@ def describe_step(step: dict) -> str:
     label = step.get("label") or step.get("tag") or "element"
     if step["action"] == "click":
         return f"Click “{label}”"
+    if step["action"] == "select" and step.get("month_format"):
+        return f"Choose the period's month in {label}"
     if step["action"] == "select":
         return f"Choose “{step.get('option_text') or step.get('value')}” in {label}"
     if step["action"] == "date":
@@ -212,6 +240,24 @@ def date_format(value: str) -> tuple[str, bool] | None:
     return None
 
 
+_MONTH_OPTION = re.compile(r"^([A-Za-z]{3,9})([\s\-/,']+)(\d{4}|\d{2})$")
+
+
+def month_option_format(text: str) -> str | None:
+    """'November 2026' -> '%B %Y', 'Nov-26' -> '%b-%y'; None if the option isn't a month."""
+    m = _MONTH_OPTION.match(text.strip())
+    if not m:
+        return None
+    word, sep, year = m.groups()
+    for fmt in ("%B", "%b"):
+        try:
+            datetime.strptime(word.title(), fmt)
+        except ValueError:
+            continue
+        return f"{fmt}{sep}{'%Y' if len(year) == 4 else '%y'}"
+    return None
+
+
 def format_date(d: date, fmt: str, upper: bool = False) -> str:
     s = d.strftime(fmt)
     return s.upper() if upper else s
@@ -232,7 +278,14 @@ def finalize_steps(raw: list[dict]) -> list[dict]:
             steps.pop()  # changed the same dropdown twice: keep the final choice
         elif steps and ev["action"] == "click" and steps[-1].get("candidates") == ev["candidates"]:
             continue  # double click
-        steps.append({k: ev.get(k) for k in ("action", "tag", "candidates", "label", "frame", "path", "value", "option_text", "format", "upper", "input_type")})
+        steps.append({k: ev.get(k) for k in ("action", "tag", "candidates", "label", "field_label", "frame", "path", "value", "option_text", "format", "upper", "input_type")})
+    # A field label only helps find a field if no other recorded field shares it.
+    labels = [s.get("field_label") for s in steps if s.get("field_label")]
+    for s in steps:
+        if s.get("field_label") and labels.count(s["field_label"]) > 1:
+            s["field_label"] = None
+        if s["action"] == "select":
+            s["month_format"] = month_option_format(s.get("option_text") or "")
     dates = [s for s in steps if s["action"] == "date"]
     parsed = []
     for s in dates:
@@ -477,13 +530,24 @@ class NetBankingSession:
         self._set("replaying", f"Fetching the statement for {start:%d %b %Y} – {end:%d %b %Y}…")
         before = len(self.imports)
         for i, step in enumerate(steps, 1):
+            if len(self.imports) > before:
+                break  # the statement already arrived; later steps (if any) aren't needed
             self._set(progress=f"Step {i} of {len(steps)}: {describe_step(step)}")
             loc = self._find(context, step)
             if loc is None:
+                if step["action"] == "select" and step.get("month_format"):
+                    continue  # a month picker that no longer offers this option: the date fields set the period
                 self._set("open", f"Couldn't find step {i} ({describe_step(step)}). The bank's page may have changed. "
                                   "Finish by hand: whatever you download is still imported. Record the steps again to fix it.")
                 return {"ok": False, "failed_step": i}
-            self._perform(loc, step, start, end)
+            try:
+                self._perform(loc, step, start, end)
+            except Exception as exc:
+                if step["action"] == "select" and step.get("month_format"):
+                    continue
+                self._set("open", f"Step {i} ({describe_step(step)}) didn't work: {str(exc).splitlines()[0][:120]}. "
+                                  "Finish by hand: whatever you download is still imported.")
+                return {"ok": False, "failed_step": i}
             self._settle(context)
         deadline = time.time() + 60
         while time.time() < deadline and len(self.imports) == before:
@@ -507,6 +571,13 @@ class NetBankingSession:
         deadline = time.time() + STEP_TIMEOUT
         while time.time() < deadline:
             for frame in self._frames(context, step):
+                if step.get("field_label"):  # the visible label survives re-renders better than ids/paths
+                    try:
+                        loc = frame.get_by_label(step["field_label"], exact=True).first
+                        if loc.count() and loc.is_visible():
+                            return loc
+                    except Exception:
+                        pass
                 for cand in step["candidates"]:
                     try:
                         loc = frame.locator(cand).first
@@ -524,11 +595,14 @@ class NetBankingSession:
     def _perform(self, loc, step: dict, start: date, end: date) -> None:
         if step["action"] == "click":
             loc.click(timeout=10_000)
+        elif step["action"] == "select" and step.get("month_format"):
+            # "November 2026" was right when recorded; pick the month the new period ends in.
+            loc.select_option(label=end.strftime(step["month_format"]), timeout=5_000)
         elif step["action"] == "select":
             try:
-                loc.select_option(value=step.get("value"), timeout=5_000)
-            except Exception:
                 loc.select_option(label=step.get("option_text"), timeout=5_000)
+            except Exception:
+                loc.select_option(value=step.get("value"), timeout=5_000)
         elif step["action"] == "date":
             d = start if step.get("role") == "from" else end
             value = d.isoformat() if step.get("input_type") == "date" else format_date(d, step["format"], bool(step.get("upper")))

@@ -14,7 +14,7 @@ pytest.importorskip("playwright")
 
 from fake_bank import FakeBank  # noqa: E402
 
-from tracker import service  # noqa: E402
+from tracker import db, service  # noqa: E402
 from tracker.fetch import netbanking  # noqa: E402
 
 SECRET_PASSWORD = "s3cret-Passw0rd"
@@ -76,11 +76,12 @@ def test_record_then_replay(bank, account):
             main = page.frame(name="main_part")
             main.wait_for_url("**/statement.html")
             main.select_option("#selAcct", "A1")
-            main.fill("#frmDate", "01/10/2026")
-            main.press("#frmDate", "Tab")
+            main.get_by_label("Statement period").select_option(label="October 2026")
+            main.get_by_label("From date").fill("01/10/2026")
+            main.get_by_label("From date").press("Tab")
             main.click("#cal a")  # calendar pop-up sets the end date by script
             main.select_option("#fmt", "XLS")
-            main.click("#btnDownload")
+            main.click("#btnDownload")  # the page then clicks a hidden <a> itself to download
 
         s.call(navigate).result(30)
         imports = _wait_imports(s, 1)
@@ -96,8 +97,17 @@ def test_record_then_replay(bank, account):
     actions = [(st["action"], st.get("role") or st.get("label")) for st in route["steps"]]
     assert actions[0] == ("click", "Account Statement") and actions[-1] == ("click", "Download")
     # A date set by a calendar pop-up is reported a moment later, so the middle order can vary.
-    assert sorted(actions[1:-1]) == sorted([("select", "selAcct"), ("date", "from"), ("date", "to"), ("select", "fmt")])
+    assert sorted(actions[1:-1]) == sorted(
+        [("select", "selAcct"), ("select", "Statement period"), ("date", "from"), ("date", "to"), ("select", "fmt")]
+    )
+    by_label = {st.get("field_label"): st for st in route["steps"] if st.get("field_label")}
+    assert by_label["Statement period"]["month_format"] == "%B %Y"
+    assert {"From date", "To date"} <= set(by_label)
     saved = json.dumps(route)
+    assert "#bb_input_" not in saved  # auto-numbered ids are never relied on
+    with db.session() as conn:  # raw recording, before get_route's clean-up of older routes
+        raw = json.loads(db.get_setting(conn, "netbanking_route:HDFC"))
+    assert not [st for st in raw["steps"] if st["candidates"][-1] == "html > body > a"]  # page's scripted click ignored
     for secret in (SECRET_PASSWORD, SECRET_USER, SECRET_OTP, "01/10/2026"):
         assert secret not in saved  # login fields never recorded; dates are re-filled on replay
 
@@ -107,7 +117,8 @@ def test_record_then_replay(bank, account):
         s.call(_login).result(30)
         result = s.command("replay", start=date(2026, 11, 1), end=date(2026, 11, 15)).result(120)
         assert result["ok"], s.snapshot()
-        assert bank.downloads[-1] == {"acct": "A1", "from": "01/11/2026", "to": "15/11/2026", "fmt": "XLS"}
+        # Field ids changed since recording; the month picker follows the new period.
+        assert bank.downloads[-1] == {"acct": "A1", "period": "November 2026", "from": "01/11/2026", "to": "15/11/2026", "fmt": "XLS"}
         imports = _wait_imports(s, 1)
         assert imports[0]["ok"] and imports[0]["n_new"] == 2
         assert len(s.snapshot()["imports"]) == 1 and len(bank.downloads) == 2
@@ -126,7 +137,7 @@ def test_manual_download_without_recording_is_imported(bank, account):
             page.frame(name="left_menu").click("text=Account Statement")
             main = page.frame(name="main_part")
             main.wait_for_url("**/statement.html")
-            main.fill("#frmDate", "01/09/2026")
+            main.get_by_label("From date").fill("01/09/2026")
             main.click("#cal a")
             main.click("#btnDownload")
 
@@ -181,6 +192,24 @@ def test_finalize_assigns_period_roles_and_drops_values():
     assert roles == {"#from": "from", "#to": "to"}
     assert all("value" not in s for s in steps if s["action"] == "date")
     assert steps[3]["value"] == "XLS"
+
+
+def test_month_options():
+    assert netbanking.month_option_format("November 2026") == "%B %Y"
+    assert netbanking.month_option_format("Nov-26") == "%b-%y"
+    assert netbanking.month_option_format("Savings XX1234") is None
+    assert netbanking.month_option_format("Excel") is None
+
+
+def test_older_routes_are_upgraded():
+    netbanking.save_route("HDFC", [
+        {"action": "select", "candidates": ["#p"], "label": "p", "frame": "", "option_text": "November 2026", "value": "2: Object"},
+        {"action": "click", "candidates": ["button:text-is(\"Download\")"], "label": "Download", "frame": ""},
+        {"action": "click", "candidates": ["html > body > a"], "label": "a", "frame": ""},
+    ])
+    steps = netbanking.get_route("HDFC")["steps"]
+    assert [s["action"] for s in steps] == ["select", "click"]
+    assert steps[0]["month_format"] == "%B %Y"
 
 
 def test_login_url_must_be_https():

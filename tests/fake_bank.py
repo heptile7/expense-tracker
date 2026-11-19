@@ -1,4 +1,12 @@
-"""A tiny fake net banking site for testing assisted fetch: login, framed menu, statement form, Excel download."""
+"""A tiny fake net banking site for testing assisted fetch.
+
+Mirrors what real banks do that broke naive recording:
+  * login page, framed menu, statement form;
+  * auto-numbered field ids (bb_input_7...) that change on every visit, with <label>s;
+  * a month dropdown ("November 2026") next to the date fields;
+  * a read-only "To" date set by a calendar pop-up without a change event;
+  * the download started by a script-created <a> that the page clicks itself.
+"""
 
 import threading
 import urllib.parse
@@ -9,7 +17,7 @@ from tempfile import TemporaryDirectory
 
 from helpers import hdfc_xlsx
 
-PAGES = {
+STATIC = {
     "/login.html": """<!doctype html><html><body><h1>Test Bank NetBanking</h1>
 <form onsubmit="location.href='/home.html'; return false;">
   <input id="userid" name="fldLoginUserId" placeholder="Customer ID">
@@ -26,27 +34,37 @@ PAGES = {
 <a href="/statement.html" target="main_part">Account Statement</a><br>
 <a href="/login.html" target="_top">Log out</a></body></html>""",
     "/welcome.html": "<!doctype html><html><body><p>Welcome back</p></body></html>",
-    "/statement.html": """<!doctype html><html><body>
+}
+
+STATEMENT = """<!doctype html><html><body>
 <select name="selAcct" id="selAcct"><option value="">Select account</option><option value="A1">Savings XX1234</option></select>
-<input id="frmDate" name="frmDate" placeholder="From (dd/mm/yyyy)">
-<input id="toDate" name="toDate" readonly placeholder="To">
+<label for="bb_input___A__">Statement period</label>
+<select id="bb_input___A__"><option value="0: Object">Select period</option><option value="1: Object">October 2026</option>
+  <option value="2: Object">November 2026</option><option value="3: Object">December 2026</option></select>
+<label for="bb_input___B__">From date</label><input id="bb_input___B__" placeholder="dd/mm/yyyy">
+<label for="bb_input___C__">To date</label><input id="bb_input___C__" readonly>
 <div class="ui-datepicker" id="cal"><table><tr><td><a href="#" onclick="pick(); return false;">15</a></td></tr></table></div>
 <select name="fmt" id="fmt"><option value="PDF">PDF</option><option value="XLS">Excel</option></select>
 <button id="btnDownload" onclick="go()">Download</button>
 <script>
   const pad = (n) => String(n).padStart(2, '0');
-  function pick() { const d = new Date(); document.getElementById('toDate').value = pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + '/' + d.getFullYear(); }
+  const el = (id) => document.getElementById(id);
+  function pick() { const d = new Date(); el('bb_input___C__').value = pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + '/' + d.getFullYear(); }
   function go() {
-    const q = new URLSearchParams({ acct: selAcct.value, from: frmDate.value, to: toDate.value, fmt: fmt.value });
-    location.href = '/download?' + q;
+    const period = el('bb_input___A__');
+    const q = new URLSearchParams({ acct: el('selAcct').value, period: period.options[period.selectedIndex].text,
+      from: el('bb_input___B__').value, to: el('bb_input___C__').value, fmt: el('fmt').value });
+    const a = document.createElement('a');  // like HDFC: a hidden link the page clicks itself
+    a.href = '/download?' + q; a.download = 'statement.xlsx';
+    document.body.appendChild(a); a.click(); a.remove();
   }
-</script></body></html>""",
-}
+</script></body></html>"""
 
 
 class FakeBank:
     def __init__(self):
         self.downloads: list[dict] = []
+        self.statement_visits = 0
         self._tmp = TemporaryDirectory()
         bank = self
 
@@ -54,25 +72,29 @@ class FakeBank:
             def log_message(self, *args):
                 pass
 
+            def _send(self, body: bytes, ctype: str, extra: dict | None = None):
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                for k, v in (extra or {}).items():
+                    self.send_header(k, v)
+                self.end_headers()
+                self.wfile.write(body)
+
             def do_GET(self):
                 url = urllib.parse.urlparse(self.path)
-                if url.path in PAGES:
-                    body = PAGES[url.path].encode()
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.send_header("Content-Length", str(len(body)))
-                    self.end_headers()
-                    self.wfile.write(body)
+                if url.path in STATIC:
+                    self._send(STATIC[url.path].encode(), "text/html; charset=utf-8")
+                elif url.path == "/statement.html":
+                    n = 7 + 10 * bank.statement_visits  # ids shift on every visit, like Angular apps
+                    bank.statement_visits += 1
+                    html = STATEMENT.replace("__A__", str(n)).replace("__B__", str(n + 1)).replace("__C__", str(n + 2))
+                    self._send(html.encode(), "text/html; charset=utf-8")
                 elif url.path == "/download":
                     q = dict(urllib.parse.parse_qsl(url.query))
                     bank.downloads.append(q)
-                    body = bank.statement(q)
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                    self.send_header("Content-Disposition", 'attachment; filename="Acct_Statement_XX1234.xlsx"')
-                    self.send_header("Content-Length", str(len(body)))
-                    self.end_headers()
-                    self.wfile.write(body)
+                    self._send(bank.statement(q), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                               {"Content-Disposition": 'attachment; filename="Acct_Statement_XX1234.xlsx"'})
                 else:
                     self.send_error(404)
 
