@@ -20,6 +20,8 @@ from collections import defaultdict
 from datetime import date, timedelta
 
 from tracker import db
+from tracker.i18n import say
+from tracker.i18n import word as tr_word
 from tracker.insights import PEOPLE_CATEGORY, _classify, _load, resolve_period, rupees
 from tracker.local_classifier import looks_like_person
 
@@ -103,10 +105,10 @@ def where_it_went(kind: str = "month", month: str | None = None, account_id: int
                          if v > 0 and n != r["name"]][:3],
     } for r in out_cats.values()]
     labels = {
-        "Investments": ("investments", "Investments", False),
-        "card_bills": ("card_bills", "Credit card bills (purchases not imported)", True),
-        "to_cards": ("to_cards", "Paid to your credit cards", False),
-        "own_accounts": ("own_accounts", "To your other accounts", False),
+        "Investments": ("investments", say("Investments"), False),
+        "card_bills": ("card_bills", say("Credit card bills (purchases not imported)"), True),
+        "to_cards": ("to_cards", say("Paid to your credit cards"), False),
+        "own_accounts": ("own_accounts", say("To your other accounts"), False),
     }
     for key, r in extra_out.items():
         kind_, name, unknown = labels[key]
@@ -196,8 +198,8 @@ def _one_offs(spending: list[tuple[dict, dict]], history: list[dict]) -> list[di
         out.append({
             "id": t["id"], "date": t["txn_date"], "payee": t["counterparty"] or t["merchant_key"].partition(":")[2],
             "category": cat.get("name"), "amount": rupees(t["amount_paise"]), "amount_paise": t["amount_paise"],
-            "why": f"about {t['amount_paise'] / usual:.0f}× what you usually pay them" if regular_payee
-                   else "a payee you don't pay regularly",
+            "why": say("about {times}× what you usually pay them", times=f"{t['amount_paise'] / usual:.0f}") if regular_payee
+                   else say("a payee you don't pay regularly"),
         })
     out.sort(key=lambda o: -o["amount_paise"])
     return out
@@ -208,30 +210,31 @@ def _unexplained(out_cats: dict, extra_out: dict, spending: list, mixups: list[d
     card = extra_out.get("card_bills")
     if card and card["amount"]:
         items.append({"kind": "card_bills", "amount": rupees(card["amount"]), "count": card["count"],
-                      "text": "Credit card bills paid with no card statement imported, so what you bought is unknown.",
-                      "fix": "Import your card statements"})
+                      "text": say("Credit card bills paid with no card statement imported, so what you bought is unknown."),
+                      "fix": say("Import your card statements")})
     by_name = {r["name"]: r for r in out_cats.values()}
     people = by_name.get(PEOPLE_CATEGORY)
     if people and people["amount"] > 0:
         pays = [t for t, cat in spending if cat.get("top_name") == PEOPLE_CATEGORY]
         big = [t for t in pays if t["amount_paise"] >= BIG_PEOPLE_PAYMENT]
         payees = len({t["merchant_key"] for t in pays})
-        text = f"{len(pays)} payments to {payees} people. What they were for isn't known."
+        text = say("{count} payments to {people} people. What they were for isn't known.", count=len(pays), people=payees)
         if big:
-            text += f" {len(big)} of them, of ₹5,000 or more, make up {round(100 * sum(t['amount_paise'] for t in big) / people['amount'])}%."
+            text += " " + say("{count} of them, of ₹5,000 or more, make up {pct}%.", count=len(big),
+                              pct=round(100 * sum(t["amount_paise"] for t in big) / people["amount"]))
         items.append({"kind": "people", "category_id": people["category_id"], "amount": rupees(people["amount"]),
                       "count": len(pays), "big_count": len(big), "big_amount": rupees(sum(t["amount_paise"] for t in big)),
-                      "text": text, "fix": "Say what the biggest ones were for"})
+                      "text": text, "fix": say("Say what the biggest ones were for")})
     for name, kind in ((UNCATEGORIZED, "uncategorized"), (OTHER, "other")):
         r = by_name.get(name)
         if r and r["amount"] > 0:
             items.append({"kind": kind, "category_id": r["category_id"], "amount": rupees(r["amount"]), "count": r["count"],
-                          "text": "No category yet." if kind == "uncategorized" else "Filed as Other: a category says what it was.",
-                          "fix": "Review them" if kind == "uncategorized" else "Pick categories"})
+                          "text": say("No category yet.") if kind == "uncategorized" else say("Filed as Other: a category says what it was."),
+                          "fix": say("Review them") if kind == "uncategorized" else say("Pick categories")})
     if mixups:
         total = sum(m["amount_paise"] for m in mixups)
         items.append({"kind": "mixups", "amount": rupees(total), "count": len(mixups),
-                      "text": "Payments that are probably in the wrong category.", "fix": "Check them",
+                      "text": say("Payments that are probably in the wrong category."), "fix": say("Check them"),
                       "items": [{k: v for k, v in m.items() if k != "amount_paise"} for m in mixups]})
     total = sum(round(i["amount"] * 100) for i in items)
     return {"amount": rupees(total), "share": round(total / total_out, 4) if total_out else None, "items": items}
@@ -255,11 +258,12 @@ def _mixups(txns: list[tuple[dict, dict]], seed_words: dict[int, str], own_names
                 and looks_like_person(payee, t["vpa"], t["channel"])):
             words = set(payee.upper().split())
             if any(n <= words for n in own_names):
-                why = f"sent to your own name, filed as {name} because the note says {word}: a transfer if it went to your own account"
+                why = say("sent to your own name, filed as {category} because the note says {word}: "
+                          "a transfer if it went to your own account", category=tr_word(name), word=word)
             else:
-                why = f"a payment to a person, filed as {name} because the note says {word}"
+                why = say("a payment to a person, filed as {category} because the note says {word}", category=tr_word(name), word=word)
         elif top == "Bank Charges" and t["amount_paise"] >= BIG_BANK_CHARGE:
-            why = "very large for a bank charge"
+            why = say("very large for a bank charge")
         if why:
             out.append({"id": t["id"], "date": t["txn_date"], "payee": payee or t["merchant_key"].partition(":")[2],
                         "category": name, "amount": rupees(t["amount_paise"]), "amount_paise": t["amount_paise"], "why": why})

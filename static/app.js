@@ -11,12 +11,13 @@ const inr0 = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR"
 const compact = new Intl.NumberFormat("en-IN", { notation: "compact", maximumFractionDigits: 1 });
 const money = (v, whole = false) => (whole ? inr0 : inr).format(v || 0);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-const fmtDate = (iso) => new Date(iso + "T00:00:00").toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
-const monthLabel = (m) => { const [y, mo] = m.split("-"); return new Date(+y, +mo - 1, 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" }); };
-const monthShort = (m) => { const [y, mo] = m.split("-"); return new Date(+y, +mo - 1, 1).toLocaleDateString("en-IN", { month: "short" }); };
-const plural = (n, word) => `${n.toLocaleString("en-IN")} ${word}${n === 1 ? "" : "s"}`;
+// Dates and month names follow the chosen language (I18N.locale: en-IN or ta-IN); amounts stay ₹1,23,456.
+const fmtDate = (iso) => new Date(iso + "T00:00:00").toLocaleDateString(I18N.locale, { day: "2-digit", month: "short", year: "numeric" });
+const monthLabel = (m) => { const [y, mo] = m.split("-"); return new Date(+y, +mo - 1, 1).toLocaleDateString(I18N.locale, { month: "long", year: "numeric" }); };
+const monthShort = (m) => { const [y, mo] = m.split("-"); return new Date(+y, +mo - 1, 1).toLocaleDateString(I18N.locale, { month: "short" }); };
+const plural = (n, word) => `${n.toLocaleString("en-IN")} ${t(n === 1 ? word : `${word}s`)}`;
 // ₹10.15 lakh for big totals, ₹23,300 below a lakh.
-const lakh = (v) => (Math.abs(v) >= 100000 ? `${v < 0 ? "−" : ""}₹${(Math.abs(v) / 100000).toFixed(2).replace(/\.?0+$/, "")} lakh` : money(v, true));
+const lakh = (v) => (Math.abs(v) >= 100000 ? `${v < 0 ? "−" : ""}₹${(Math.abs(v) / 100000).toFixed(2).replace(/\.?0+$/, "")} ${t("lakh")}` : money(v, true));
 
 async function api(method, url, body, isForm = false) {
   const opts = { method, headers: {} };
@@ -149,18 +150,19 @@ async function loadDashboard() {
   if (!d.has_data) return;
   $("#dash-month").value = d.period.end.slice(0, 7);
   const p = d.period;
-  const soFar = p.in_progress ? " so far" : "";
+  const soFar = p.in_progress ? t(" so far") : "";
   $("#t-spent").textContent = money(d.spent, true);
-  $("#t-spent-sub").textContent = `${p.label}${soFar} · ${money(d.daily_average, true)} a day` +
-    (d.projected_spend ? ` · on pace for ${money(d.projected_spend, true)}` : "");
+  $("#t-spent-sub").textContent = t("{period}{so_far} · {amount} a day", { period: p.label, so_far: soFar, amount: money(d.daily_average, true) }) +
+    (d.projected_spend ? t(" · on pace for {amount}", { amount: money(d.projected_spend, true) }) : "");
   $("#t-income").textContent = money(d.income, true);
-  $("#t-income-sub").textContent = d.income_sources.slice(0, 2).map((x) => x.name).join(", ");
+  $("#t-income-sub").textContent = d.income_sources.slice(0, 2).map((x) => tc(x.name)).join(", ");
   $("#t-saved").textContent = signed(d.saved);
-  $("#t-saved-sub").textContent = d.savings_rate == null ? "No income recorded"
-    : d.savings_rate < 0 ? (p.in_progress ? "Spending is ahead of income so far" : "Spent more than came in")
-    : `${pct(d.savings_rate)} of income`;
+  $("#t-saved-sub").textContent = d.savings_rate == null ? t("No income recorded")
+    : d.savings_rate < 0 ? t(p.in_progress ? "Spending is ahead of income so far" : "Spent more than came in")
+    : t("{pct} of income", { pct: pct(d.savings_rate) });
   $("#t-invested").textContent = money(d.invested, true);
-  $("#t-invested-sub").textContent = d.invest_rate == null || d.invest_rate > 1 ? "Not counted as spending" : `${pct(d.invest_rate)} of income · not counted as spending`;
+  $("#t-invested-sub").textContent = d.invest_rate == null || d.invest_rate > 1 ? t("Not counted as spending")
+    : t("{pct} of income · not counted as spending", { pct: pct(d.invest_rate) });
   renderWhere(w);
   renderSplit(d);
   renderFacts(d.facts);
@@ -172,8 +174,9 @@ async function loadDashboard() {
   renderUnusual(d.unusual);
   renderTrend($("#chart-trend"), d.trend);
   const chain = state.meta?.categorizer?.chain || [];
-  $("#dash-foot").textContent = `Spending is net of refunds booked to the same category; transfers between your accounts and card bill payments aren't counted. ` +
-    `New payees are categorized by: ${chain.join(" → ")}.${d.needs_review ? ` ${plural(d.needs_review, "transaction")} need a look in Review.` : ""}`;
+  $("#dash-foot").textContent = t("Spending is net of refunds booked to the same category; transfers between your accounts and card bill payments aren't counted. ") +
+    t("New payees are categorized by: {chain}.", { chain: chain.join(" → ") }) +
+    (d.needs_review ? t(" {count} need a look in Review.", { count: plural(d.needs_review, "transaction") }) : "");
 }
 
 // ── Where the money went ─────────────────────────────────────────────────────
@@ -197,26 +200,28 @@ function whereOpen(w, row) {
 
 function renderWhere(w) {
   const p = w.period, several = p.months > 1;
-  $("#where-period").textContent = p.label + (p.in_progress ? " so far" : "") +
-    (p.months_in_period > 1 && Math.round(p.months) < p.months_in_period ? ` · statements cover ${Math.round(p.months)} of the ${p.months_in_period} months` : "");
+  $("#where-period").textContent = p.label + (p.in_progress ? t(" so far") : "") +
+    (p.months_in_period > 1 && Math.round(p.months) < p.months_in_period
+      ? t(" · statements cover {n} of the {m} months", { n: Math.round(p.months), m: p.months_in_period }) : "");
   if (!w.money_out && !w.money_in) {
-    $("#where-lead").textContent = "Nothing came in or went out in this period.";
+    $("#where-lead").textContent = t("Nothing came in or went out in this period.");
     ["#where-rows", "#where-unknown", "#where-oneoffs", "#where-from"].forEach((s) => { $(s).innerHTML = ""; });
     return;
   }
-  const perMonth = (v) => (several && v != null ? ` (${lakh(v)} a month)` : "");
-  let lead = `<b>${lakh(w.money_out)}</b> went out${perMonth(w.out_per_month)} and <b>${lakh(w.money_in)}</b> came in.`;
+  const perMonth = (v) => (several && v != null ? t(" ({amount} a month)", { amount: lakh(v) }) : "");
+  let lead = t("{out} went out{per_month} and {in} came in.", { out: `<b>${lakh(w.money_out)}</b>`, per_month: perMonth(w.out_per_month), in: `<b>${lakh(w.money_in)}</b>` });
   if (w.balance) {
     const ch = w.balance.change;
-    lead += ` Your bank balance went ${ch < 0 ? "down" : "up"} by <b>${money(Math.abs(ch), true)}</b>, from ${money(w.balance.opening, true)} to ${money(w.balance.closing, true)}`;
-    lead += w.check?.matches ? `: <span class="ok">every rupee is accounted for.</span>`
-      : `. ${money(Math.abs(w.check.gap), true)} of that isn't accounted for: usually card spending not paid off yet, or a gap between statements.`;
+    lead += t(ch < 0 ? " Your bank balance went down by {amount}, from {from} to {to}" : " Your bank balance went up by {amount}, from {from} to {to}",
+      { amount: `<b>${money(Math.abs(ch), true)}</b>`, from: money(w.balance.opening, true), to: money(w.balance.closing, true) });
+    lead += w.check?.matches ? `<span class="ok">${t(": every rupee is accounted for.")}</span>`
+      : t(". {amount} of that isn't accounted for: usually card spending not paid off yet, or a gap between statements.", { amount: money(Math.abs(w.check.gap), true) });
   }
   $("#where-lead").innerHTML = lead;
 
   const max = Math.max(...w.rows.map((r) => r.amount), 1);
   const rowHtml = (r, i) => {
-    const subs = [r.unexplained ? "not explained yet" : "", ...r.top_children.map((c) => `${c.name} ${money(c.amount, true)}`)]
+    const subs = [r.unexplained ? t("not explained yet") : "", ...r.top_children.map((c) => `${tc(c.name)} ${money(c.amount, true)}`)]
       .filter(Boolean).join(" · ");
     const cls = r.unexplained ? "unknown" : r.kind === "investments" ? "savings" : "";
     return `<div class="where-row ${cls}" data-i="${i}"${i >= WHERE_TOP ? " hidden" : ""}>
@@ -229,7 +234,7 @@ function renderWhere(w) {
   };
   $("#where-rows").innerHTML = `<div class="where-row head"><span>Went to</span><span class="bar-cell"></span><span class="num">Total</span>` +
     `<span class="num pm">${several ? "A month" : ""}</span><span class="share">Share</span></div>` + w.rows.map(rowHtml).join("") +
-    (w.rows.length > WHERE_TOP ? `<button class="link where-toggle" id="where-all">Show ${w.rows.length - WHERE_TOP} more</button>` : "");
+    (w.rows.length > WHERE_TOP ? `<button class="link where-toggle" id="where-all">${t("Show {n} more", { n: w.rows.length - WHERE_TOP })}</button>` : "");
   $$("[data-where]", $("#where-rows")).forEach((b) => b.addEventListener("click", () => whereOpen(w, w.rows[+b.dataset.where])));
   $("#where-all")?.addEventListener("click", (e) => {
     $$(".where-row[hidden]", $("#where-rows")).forEach((r) => { r.hidden = false; });
@@ -240,11 +245,11 @@ function renderWhere(w) {
   const u = w.unexplained;
   const fixButton = (it, i) => `<button class="link fix" data-fix="${i}">${esc(it.fix)} →</button>`;
   $("#where-unknown").innerHTML = u.items.length
-    ? `<h3><span>Not explained yet</span><span class="hint">${money(u.amount, true)} · ${pct(u.share)} of what went out</span></h3>
+    ? `<h3><span>Not explained yet</span><span class="hint">${t("{amount} · {pct} of what went out", { amount: money(u.amount, true), pct: pct(u.share) })}</span></h3>
        <div class="where-meter" role="img" aria-label="${pct(u.share)} not explained"><i style="width:${Math.min(100, (u.share || 0) * 100)}%"></i></div>
        <ul class="where-list">${u.items.map((it, i) => `<li><span>${esc(it.text)}</span><span class="amt">${money(it.amount, true)}</span>
          ${it.items ? `<ul>${it.items.map((m) => `<li><span class="payee" data-open="${m.id}" tabindex="0">${esc(m.payee)}</span>
-           <span class="amt">${money(m.amount, true)}</span><span class="sub">${fmtDate(m.date)} · ${esc(m.category)}: ${esc(m.why)}. Click to change it.</span></li>`).join("")}</ul>`
+           <span class="amt">${money(m.amount, true)}</span><span class="sub">${fmtDate(m.date)} · ${esc(tc(m.category))}: ${esc(m.why)}. ${t("Click to change it.")}</span></li>`).join("")}</ul>`
            : fixButton(it, i)}</li>`).join("")}</ul>`
     : `<h3><span>Not explained yet</span><span class="hint">nothing</span></h3><p class="hint">Everything that went out has a category.</p>`;
   $$("[data-fix]", $("#where-unknown")).forEach((b) => b.addEventListener("click", () => {
@@ -254,23 +259,23 @@ function renderWhere(w) {
   }));
 
   // One-off payments
-  const regular = several && w.regular_per_month != null ? `${money(w.regular_per_month, true)} a month` : money(w.regular_out, true);
+  const regular = several && w.regular_per_month != null ? t("{amount} a month", { amount: money(w.regular_per_month, true) }) : money(w.regular_out, true);
   $("#where-oneoffs").innerHTML = w.one_offs.length
-    ? `<h3><span>One-off payments</span><span class="hint">${money(w.one_off_total, true)} · without them, ${regular} went out</span></h3>
+    ? `<h3><span>One-off payments</span><span class="hint">${t("{amount} · without them, {regular} went out", { amount: money(w.one_off_total, true), regular })}</span></h3>
        <ul class="where-list">${w.one_offs.map((o) => `<li><span class="payee" data-open="${o.id}" tabindex="0">${esc(o.payee)}</span>
-         <span class="amt">${money(o.amount, true)}</span><span class="sub">${esc(o.category)} · ${fmtDate(o.date)} · ${esc(o.why)}</span></li>`).join("")}</ul>`
+         <span class="amt">${money(o.amount, true)}</span><span class="sub">${esc(tc(o.category))} · ${fmtDate(o.date)} · ${esc(o.why)}</span></li>`).join("")}</ul>`
     : `<h3><span>One-off payments</span><span class="hint">none</span></h3><p class="hint">No large payments outside your usual pattern (₹10,000 or more).</p>`;
 
   $("#where-from").textContent = w.came_from.length
-    ? `Came in: ${w.came_from.map((c) => `${c.name} ${lakh(c.amount)}`).join(" · ")}.` : "";
+    ? t("Came in: {list}.", { list: w.came_from.map((c) => `${tc(c.name)} ${lakh(c.amount)}`).join(" · ") }) : "";
 }
 
 function renderSplit(d) {
   const inc = d.income || 0;
   const overspent = d.saved < 0 || inc <= 0;
   const total = overspent ? d.needs + d.wants : inc;
-  const parts = [["needs", "Needs", d.needs], ["wants", "Wants", d.wants]];
-  if (!overspent) parts.push(["saved", "Saved", d.saved]);
+  const parts = [["needs", t("Needs"), d.needs], ["wants", t("Wants"), d.wants]];
+  if (!overspent) parts.push(["saved", t("Saved"), d.saved]);
   const bar = $("#split-bar");
   bar.setAttribute("aria-label", parts.map(([, l, v]) => `${l} ${money(v, true)}`).join(", "));
   bar.innerHTML = parts.filter(([, , v]) => v > 0).map(([k, l, v]) => {
@@ -279,18 +284,18 @@ function renderSplit(d) {
   }).join("");
   $$(".part", bar).forEach((el) => {
     const [, l, v] = parts.find(([k]) => k === el.dataset.k);
-    el.addEventListener("mousemove", (e) => showTip(`<div class="tt-title">${l}</div><div class="tt-row">Amount<b>${money(v, true)}</b></div>` +
-      (inc ? `<div class="tt-row">Share of income<b>${pct(v / inc)}</b></div>` : ""), e.clientX, e.clientY));
+    el.addEventListener("mousemove", (e) => showTip(`<div class="tt-title">${l}</div><div class="tt-row">${t("Amount")}<b>${money(v, true)}</b></div>` +
+      (inc ? `<div class="tt-row">${t("Share of income")}<b>${pct(v / inc)}</b></div>` : ""), e.clientX, e.clientY));
     el.addEventListener("mouseleave", hideTip);
   });
   // Shares of income normally; of spending when more went out than came in.
-  const share = (v) => (total ? ` (${pct(v / total)}${overspent ? " of spending" : ""})` : "");
+  const share = (v) => (total ? ` (${pct(v / total)}${overspent ? t(" of spending") : ""})` : "");
   $("#split-legend").innerHTML =
-    `<span class="key s1"></span>Needs <b>${money(d.needs, true)}</b>${share(d.needs)}` +
-    `<span class="key s2"></span>Wants <b>${money(d.wants, true)}</b>${share(d.wants)}` +
+    `<span class="key s1"></span>${t("Needs")} <b>${money(d.needs, true)}</b>${share(d.needs)}` +
+    `<span class="key s2"></span>${t("Wants")} <b>${money(d.wants, true)}</b>${share(d.wants)}` +
     (overspent && inc > 0
-      ? `<span class="key over"></span>Overspent <b>${money(-d.saved, true)}</b> more than came in`
-      : `<span class="key s3"></span>Saved <b>${money(Math.max(d.saved, 0), true)}</b>${share(d.saved)}`);
+      ? `<span class="key over"></span>${t("Overspent")} <b>${money(-d.saved, true)}</b> ${t("more than came in")}`
+      : `<span class="key s3"></span>${t("Saved")} <b>${money(Math.max(d.saved, 0), true)}</b>${share(d.saved)}`);
 }
 
 function renderFacts(facts) {
@@ -301,7 +306,7 @@ function renderFacts(facts) {
 }
 
 const CARD_STATUS = {
-  paid: ["Paid", "good"], due: ["Due", ""], part_paid: ["Minimum paid", "medium"], overdue: ["Overdue", "high"],
+  paid: ["Paid", "good"], due: ["To pay", ""], part_paid: ["Minimum paid", "medium"], overdue: ["Overdue", "high"],
   unknown: ["Amount due not found", ""], no_statement: ["No statement yet", ""],
 };
 
@@ -310,13 +315,15 @@ function renderCards(cards) {
   if (!cards.length) return;
   const due = (c) => {
     if (!c.due_date) return "—";
-    const when = c.status === "paid" ? "" : c.days_left > 1 ? `in ${c.days_left} days` : c.days_left === 1 ? "tomorrow"
-      : c.days_left === 0 ? "today" : `${-c.days_left} days ago`;
+    const when = c.status === "paid" ? "" : c.days_left > 1 ? t("in {n} days", { n: c.days_left }) : c.days_left === 1 ? t("tomorrow")
+      : c.days_left === 0 ? t("today") : t("{n} days ago", { n: -c.days_left });
     return `${fmtDate(c.due_date)}${when ? `<div class="sub">${when}</div>` : ""}`;
   };
   $("#cards").innerHTML = miniTable(cards, [
-    { h: "Card", f: (c) => nameCell(c.name, c.statement_date ? `Statement ${fmtDate(c.statement_date)} · ${money(c.spent, true)} spent` : "Import a card statement to see its bill") },
-    { h: "Bill", num: true, f: (c) => c.total_due == null ? "—" : `${money(c.total_due, true)}${c.min_due ? `<div class="sub">minimum ${money(c.min_due, true)}</div>` : ""}` },
+    { h: "Card", f: (c) => nameCell(c.name, c.statement_date ? t("Statement {date} · {amount} spent", { date: fmtDate(c.statement_date), amount: money(c.spent, true) })
+      : t("Import a card statement to see its bill")) },
+    { h: "Bill", num: true, f: (c) => c.total_due == null ? "—"
+      : `${money(c.total_due, true)}${c.min_due ? `<div class="sub">${t("minimum {amount}", { amount: money(c.min_due, true) })}</div>` : ""}` },
     { h: "Paid since", num: true, f: (c) => (c.statement_date ? money(c.paid, true) : "—") },
     { h: "Due", num: true, f: due },
     { h: "Status", f: (c) => { const [label, cls] = CARD_STATUS[c.status] || [c.status, ""]; return `<span class="pill ${cls}">${label}</span>`; } },
@@ -339,7 +346,7 @@ function renderCategoryTable(d) {
       chg = `<span class="chg ${cls}" title="Usual for this point: ${money(c.usual, true)}">${arrow} ${Math.abs(Math.round(c.change_pct * 100))}%</span>`;
     }
     const budget = c.budget
-      ? `<div class="budget">${pct(c.budget_used)} of ${money(c.budget, true)}<div class="meter${c.budget_used > 1 ? " over" : ""}"><i style="width:${Math.min(100, c.budget_used * 100)}%"></i></div></div>`
+      ? `<div class="budget">${t("{pct} of {amount}", { pct: pct(c.budget_used), amount: money(c.budget, true) })}<div class="meter${c.budget_used > 1 ? " over" : ""}"><i style="width:${Math.min(100, c.budget_used * 100)}%"></i></div></div>`
       : `<div class="budget"></div>`;
     html += `<div class="cat-row top" data-i="${i}">
       <button class="name" data-toggle="${expandable ? i : ""}" data-cat="${c.id}" aria-expanded="false">
@@ -349,7 +356,7 @@ function renderCategoryTable(d) {
     for (const ch of c.children) {
       if (!expandable) break;
       html += `<div class="cat-row child" data-parent="${i}" hidden>
-        <button class="name" data-cat="${ch.id}" data-month="${month}"><span>${esc(ch.is_parent ? `${c.name} (other)` : ch.name)}</span></button>
+        <button class="name" data-cat="${ch.id}" data-month="${month}"><span>${esc(ch.is_parent ? t("{name} (other)", { name: tc(c.name) }) : ch.name)}</span></button>
         <div class="bar-cell"><div class="bar" style="width:${(ch.amount / max) * 100}%"></div></div>
         <div class="amt">${money(ch.amount, true)}</div><span class="chg">${plural(ch.count, "payment")}</span><span class="budget-cell"></span></div>`;
     }
@@ -372,14 +379,16 @@ function miniTable(rows, cols, empty) {
     rows.map((r) => `<tr class="${r._cls || ""}">${cols.map((c) => `<td class="${c.num ? "num" : ""}">${c.f(r)}</td>`).join("")}</tr>`).join("") +
     "</tbody></table>";
 }
-const nameCell = (name, sub) => `<div class="name" title="${esc(name)}">${esc(name)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ""}`;
+const nameCell = (name, sub) => `<div class="name" data-noi18n title="${esc(name)}">${esc(name)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ""}`;
 
 function renderRecurring(d) {
   const rows = d.recurring.map((r) => ({ ...r, _cls: r.active ? "" : "inactive" }));
   $("#recurring-total").textContent = d.recurring_monthly
-    ? `≈ ${money(d.recurring_monthly, true)} a month${d.recurring_share_of_income ? ` · ${pct(d.recurring_share_of_income)} of usual income` : ""}` : "";
+    ? (d.recurring_share_of_income
+      ? t("≈ {amount} a month · {pct} of usual income", { amount: money(d.recurring_monthly, true), pct: pct(d.recurring_share_of_income) })
+      : t("≈ {amount} a month", { amount: money(d.recurring_monthly, true) })) : "";
   $("#recurring").innerHTML = miniTable(rows, [
-    { h: "Payee", f: (r) => nameCell(r.payee, r.active ? r.category : `${r.category} · not seen recently`) },
+    { h: "Payee", f: (r) => nameCell(r.payee, r.active ? r.category : t("{category} · not seen recently", { category: tc(r.category) })) },
     { h: "Per month", num: true, f: (r) => money(r.monthly, true) },
     { h: "Last paid", num: true, f: (r) => fmtDate(r.last_date) },
   ], "No regular payments spotted yet (needs about 3 months of statements).");
@@ -395,17 +404,17 @@ function renderMerchants(list) {
 }
 
 function renderPeople(d) {
-  $("#people-total").textContent = d.people_total ? `${money(d.people_total, true)} in total` : "";
+  $("#people-total").textContent = d.people_total ? t("{amount} in total", { amount: money(d.people_total, true) }) : "";
   $("#people").innerHTML = miniTable(d.people, [
     { h: "Person", f: (m) => nameCell(m.name) },
-    { h: "Payments", num: true, f: (m) => m.count },
+    { h: "Times paid", num: true, f: (m) => m.count },
     { h: "Total", num: true, f: (m) => money(m.amount, true) },
   ], "No payments to individuals in this period");
 }
 
 function renderUnusual(list) {
   $("#unusual").innerHTML = miniTable(list, [
-    { h: "Payment", f: (u) => `<div class="name payee" data-open="${u.id}" tabindex="0">${esc(u.payee || "Unknown")}</div><div class="sub">${esc(u.category)} · ${u.times_usual}× the usual payment</div>` },
+    { h: "Payment", f: (u) => `<div class="name payee" data-open="${u.id}" tabindex="0">${esc(u.payee || "Unknown")}</div><div class="sub">${esc(tc(u.category))} · ${t("{times}× the usual payment", { times: u.times_usual })}</div>` },
     { h: "Date", num: true, f: (u) => fmtDate(u.date) },
     { h: "Amount", num: true, f: (u) => money(u.amount, true) },
   ], "Nothing out of the ordinary");
@@ -486,7 +495,7 @@ function txnRow(t, withCheckbox = false) {
         <div class="narr" title="${esc(t.narration_raw)}">${esc(t.narration_raw)}</div></td>
     <td class="num ${t.direction === "credit" ? "amt-credit" : ""}">${sign}${money(t.amount)}<div class="acct">${esc(t.account_name)}</div></td>
     <td class="cat-cell"><select class="cat-select" data-id="${t.id}" data-current="${t.category_id}" aria-label="Category">${categoryOptions(t.category_id)}</select>
-        <button type="button" class="cat-chip${t.needs_review ? " unsure" : ""}" data-pick="${t.id}">${esc(t.category || "Uncategorized")}<span aria-hidden="true">▾</span></button></td>
+        <button type="button" class="cat-chip${t.needs_review ? " unsure" : ""}" data-pick="${t.id}">${esc(tc(t.category || "Uncategorized"))}<span aria-hidden="true">▾</span></button></td>
     <td class="how">${t.needs_review ? '<span class="dot" title="Needs review"></span>' : ""}${(HOW[t.category_source] || (() => ""))(t)}</td>
   </tr>`;
 }
@@ -514,11 +523,11 @@ async function loadTxns(reset = true) {
   const body = $("#txn-body");
   const html = data.items.map((t) => txnRow(t)).join("");
   body.innerHTML = reset ? html : body.innerHTML + html;
-  if (!data.total) body.innerHTML = `<tr><td colspan="5" class="empty">No transactions match.</td></tr>`;
+  if (!data.total) body.innerHTML = `<tr><td colspan="5" class="empty">${t("No transactions match.")}</td></tr>`;
   state.txnOffset += data.items.length;
   $("#txn-more").hidden = state.txnOffset >= data.total;
-  const chip = state.txnMerchant ? ` · payee <span class="pill">${esc(state.txnMerchantLabel)} <button class="link" id="clear-merchant" aria-label="Clear payee filter">✕</button></span>` : "";
-  const range = state.txnRange ? ` · <span class="pill">${esc(state.txnRange.label)}${state.txnSort === "amount_desc" ? ", largest first" : ""} <button class="link" id="clear-range" aria-label="Clear period filter">✕</button></span>` : "";
+  const chip = state.txnMerchant ? ` · ${t("payee")} <span class="pill">${esc(state.txnMerchantLabel)} <button class="link" id="clear-merchant" aria-label="Clear payee filter">✕</button></span>` : "";
+  const range = state.txnRange ? ` · <span class="pill">${esc(state.txnRange.label)}${state.txnSort === "amount_desc" ? t(", largest first") : ""} <button class="link" id="clear-range" aria-label="Clear period filter">✕</button></span>` : "";
   $("#txn-summary").innerHTML = `${plural(data.total, "transaction")}${chip}${range}`;
   $("#clear-merchant")?.addEventListener("click", () => { state.txnMerchant = null; loadTxns(true).catch(fail); });
   $("#clear-range")?.addEventListener("click", () => { state.txnRange = null; state.txnSort = null; loadTxns(true).catch(fail); });
@@ -552,11 +561,11 @@ function openPicker(txnId) {
   if (!sel) return;
   const cats = (state.meta?.categories || []).filter((c) => c.is_active);
   const byId = new Map(cats.map((c) => [c.id, c]));
-  $("#pk-title").textContent = row?.querySelector(".payee")?.textContent || "Choose a category";
+  $("#pk-title").textContent = row?.querySelector(".payee")?.textContent || t("Choose a category");
   $("#pk-sub").textContent = [row?.querySelector(".num")?.firstChild?.textContent, row?.querySelector(".date")?.textContent].filter(Boolean).join(" · ");
-  const item = (c) => `<button type="button" class="pick-item${c.parent_id ? " sub" : ""}${String(c.id) === sel.value ? " current" : ""}" data-cat="${c.id}">${esc(c.name)}</button>`;
+  const item = (c) => `<button type="button" class="pick-item${c.parent_id ? " sub" : ""}${String(c.id) === sel.value ? " current" : ""}" data-cat="${c.id}" data-en="${esc(c.name.toLowerCase())}">${esc(c.name)}</button>`;
   const recent = recentCategories().map((id) => byId.get(id)).filter(Boolean);
-  $("#pk-recent").innerHTML = recent.length ? `<div class="pick-label">Recently used</div><div class="chips">${recent.map((c) =>
+  $("#pk-recent").innerHTML = recent.length ? `<div class="pick-label">${t("Recently used")}</div><div class="chips">${recent.map((c) =>
     `<button type="button" class="chip" data-cat="${c.id}">${esc(c.name)}</button>`).join("")}</div>` : "";
   $("#pk-list").innerHTML = Object.entries(PICK_GROUPS).map(([kind, label]) => {
     const group = cats.filter((c) => c.kind === kind);
@@ -570,7 +579,8 @@ function openPicker(txnId) {
 
 function filterPicker() {
   const q = $("#pk-search").value.trim().toLowerCase();
-  $$("#pk-list .pick-item").forEach((b) => { b.hidden = q && !b.textContent.toLowerCase().includes(q); });
+  // Matches the shown name (Tamil or English) and the English name, so "rent" finds வாடகை too.
+  $$("#pk-list .pick-item").forEach((b) => { b.hidden = q && !b.textContent.toLowerCase().includes(q) && !b.dataset.en.includes(q); });
   $$("#pk-list .pick-label").forEach((l) => {
     let n = l.nextElementSibling, any = false;
     while (n && !n.classList.contains("pick-label")) { if (!n.hidden) any = true; n = n.nextElementSibling; }
@@ -593,19 +603,19 @@ async function onCategoryChange(sel) {
   const id = +sel.dataset.id, prev = sel.dataset.current, catId = +sel.value;
   const catName = sel.options[sel.selectedIndex].text.replace(/^[\s ]*↳\s*/, "");
   try {
-    const t = await api("GET", `/api/transactions/${id}`);
-    const payee = t.counterparty || "this payee";
+    const txn = await api("GET", `/api/transactions/${id}`);
+    const payee = txn.counterparty || "this payee";
     $("#dc-text").textContent = `${payee} → ${catName}`;
-    $("#dc-merchant").textContent = t.similar_count
-      ? `All ${t.similar_count + 1} from ${payee}, and future ones`
-      : `This one and future payments to ${payee}`;
+    $("#dc-merchant").textContent = txn.similar_count
+      ? t("All {n} from {payee}, and future ones", { n: txn.similar_count + 1, payee })
+      : t("This one and future payments to {payee}", { payee });
     const scope = await ask($("#dlg-category"));
     if (scope !== "merchant" && scope !== "single") { sel.value = prev; return; }
     const res = await api("PATCH", `/api/transactions/${id}`, { category_id: catId, scope });
     const c = res.category;
     toast(scope === "merchant"
-      ? `${c.counterparty}: ${plural(c.updated, "transaction")} set to ${c.category}. Future ones will follow.`
-      : `Changed just this transaction to ${c.category}.`);
+      ? t("{payee}: {count} set to {category}. Future ones will follow.", { payee: c.counterparty, count: plural(c.updated, "transaction"), category: tc(c.category) })
+      : t("Changed just this transaction to {category}.", { category: tc(c.category) }));
     sel.dataset.current = catId;
     refreshBadge();
     reloadCurrent();
@@ -737,14 +747,14 @@ async function loadReview() {
   const data = await api("GET", "/api/transactions?needs_review=true&sort=confidence&limit=500");
   $("#rv-body").innerHTML = data.items.length
     ? data.items.map((t) => txnRow(t, true)).join("")
-    : `<tr><td colspan="6" class="empty">Nothing to review. Everything has a confident category.</td></tr>`;
+    : `<tr><td colspan="6" class="empty">${t("Nothing to review. Everything has a confident category.")}</td></tr>`;
   $("#rv-all").checked = false;
   updateAcceptButton();
 }
 const updateAcceptButton = () => {
   const n = $$(".rv-cb:checked").length;
   $("#rv-accept").disabled = !n;
-  $("#rv-accept").textContent = n ? `Accept ${n} selected` : "Accept selected";
+  $("#rv-accept").textContent = n ? t("Accept {n} selected", { n }) : t("Accept selected");
 };
 
 // ── Import ───────────────────────────────────────────────────────────────────
@@ -797,29 +807,30 @@ async function processFile(file, card, opts = {}) {
 
 function renderImportResult(card, file, r) {
   if (r.duplicate_file) {
-    card.innerHTML = `<div class="title">${esc(file.name)}</div><div class="meta">Already imported into ${esc(r.account_name)}. Nothing changed.</div>`;
+    card.innerHTML = `<div class="title">${esc(file.name)}</div><div class="meta">${t("Already imported into {account}. Nothing changed.", { account: esc(r.account_name) })}</div>`;
     return;
   }
   const s = r.categorize?.by_source || {};
   const parts = [];
-  if (s.rule) parts.push(`${s.rule} by your rules`);
-  if (s.seed) parts.push(`${s.seed} by built-in rules`);
-  if (s.llm) parts.push(`${s.llm} by Claude`);
-  if (s.local) parts.push(`${s.local} guessed offline`);
-  if (r.transfers) parts.push(r.kind === "credit_card" ? `${plural(r.transfers, "bill payment")} recognised` : `${r.transfers} transfers between your accounts`);
-  if (s.fallback) parts.push(`${s.fallback} left uncategorized`);
+  if (s.rule) parts.push(t("{n} by your rules", { n: s.rule }));
+  if (s.seed) parts.push(t("{n} by built-in rules", { n: s.seed }));
+  if (s.llm) parts.push(t("{n} by Claude", { n: s.llm }));
+  if (s.local) parts.push(t("{n} guessed offline", { n: s.local }));
+  if (r.transfers) parts.push(r.kind === "credit_card" ? plural(r.transfers, "bill payment") : t("{n} transfers between your accounts", { n: r.transfers }));
+  if (s.fallback) parts.push(t("{n} left uncategorized", { n: s.fallback }));
   const period = r.period_start ? `${fmtDate(r.period_start)} – ${fmtDate(r.period_end)}` : "";
   const c = r.categorize || {};
   const claude = c.llm_calls
-    ? `${esc(c.llm_backend || "Claude")} looked at ${plural(c.llm_merchants, "new payee")}${c.llm_cost_usd ? ` ($${c.llm_cost_usd.toFixed(4)})` : ""}.` : "";
+    ? t("{backend} looked at {payees}.", { backend: esc(c.llm_backend || "Claude"),
+      payees: plural(c.llm_merchants, "new payee") + (c.llm_cost_usd ? ` ($${c.llm_cost_usd.toFixed(4)})` : "") }) : "";
   const warn = c.llm_error
-    ? `<div class="meta" style="color: var(--muted)">Claude wasn't available (${esc(c.llm_error)}), so new payees were guessed offline.</div>` : "";
+    ? `<div class="meta" style="color: var(--muted)">${t("Claude wasn't available ({error}), so new payees were guessed offline.", { error: esc(c.llm_error) })}</div>` : "";
   const b = r.card;
-  const bill = b ? `<div class="meta">Credit card statement${b.total_due != null ? ` · bill ${money(b.total_due, true)}` : ""}` +
-    `${b.min_due ? ` (minimum ${money(b.min_due, true)})` : ""}${b.due_date ? `, due ${fmtDate(b.due_date)}` : ""}.` +
-    `${r.account_created ? ` Added it as a new account, “${esc(r.account_name)}”; rename it in Settings if you like.` : ""}</div>` : "";
+  const bill = b ? `<div class="meta">${t("Credit card statement")}${b.total_due != null ? t(" · bill {amount}", { amount: money(b.total_due, true) }) : ""}` +
+    `${b.min_due ? t(" (minimum {amount})", { amount: money(b.min_due, true) }) : ""}${b.due_date ? t(", due {date}", { date: fmtDate(b.due_date) }) : ""}.` +
+    `${r.account_created ? t(" Added it as a new account, “{name}”; rename it in Settings if you like.", { name: esc(r.account_name) }) : ""}</div>` : "";
   card.innerHTML = `<div class="title">${esc(file.name)} → ${esc(r.account_name)}</div>
-    <div class="meta">${plural(r.n_new, "new transaction")}${r.n_duplicates ? `, ${r.n_duplicates} already present` : ""} · ${period}</div>
+    <div class="meta">${plural(r.n_new, "new transaction")}${r.n_duplicates ? t(", {n} already present", { n: r.n_duplicates }) : ""} · ${period}</div>
     ${bill}<div class="meta">${parts.join(" · ")}${parts.length ? ". " : ""}${claude}</div>${warn}`;
 }
 
@@ -901,6 +912,7 @@ function renderNbSession(s) {
   $("#nb-record").hidden = !live;
   $("#nb-record").disabled = s.state === "replaying";
   $("#nb-record").textContent = s.recording ? "Stop recording" : (s.has_route ? "Record my steps again" : "Record my steps");
+  $("#nb-record").dataset.recording = s.recording ? "1" : "";  // the label may be translated: don't compare it
   $("#nb-close").hidden = !live;
   $("#nb-close").textContent = s.logout_failed ? "Close anyway" : "Log out and close";
   $("#nb-close").dataset.force = s.logout_failed ? "1" : "";
@@ -1051,7 +1063,9 @@ function bindPhone() {
   $$("#bottom-nav [data-tab]").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
   $("#bottom-nav [data-more]").addEventListener("click", async () => {
     const choice = await ask($("#dlg-more"));
-    if (choice === "signout") {
+    if (choice === "lang") {
+      changeLanguage(I18N.lang === "ta" ? "en" : "ta");
+    } else if (choice === "signout") {
       await api("POST", "/api/auth/signout").catch(() => {});
       location.reload();
     } else if (LOADERS[choice]) showTab(choice);
@@ -1201,7 +1215,7 @@ function bind() {
     if ($("#nb-period").value === "custom" && (!p.start || !p.end)) { toast("Pick both dates"); return; }
     nbAction("replay", p);
   });
-  $("#nb-record").addEventListener("click", () => nbAction($("#nb-record").textContent === "Stop recording" ? "record_stop" : "record_start"));
+  $("#nb-record").addEventListener("click", () => nbAction($("#nb-record").dataset.recording ? "record_stop" : "record_start"));
   // Logs out of the bank, then closes. If the app couldn't find Log out, the button becomes “Close anyway”.
   $("#nb-close").addEventListener("click", () => nbAction("close", { force: $("#nb-close").dataset.force === "1" }));
 
@@ -1350,9 +1364,18 @@ function askPin(person) {
   $("#gate-people").hidden = true;
   $("#gate-pin").hidden = false;
   $("#pin-back").hidden = document.querySelectorAll("#people-list .person").length < 2;
-  $("#pin-title").textContent = `Hello ${person.name}, enter your PIN`;
+  $("#pin-title").textContent = t("Hello {name}, enter your PIN", { name: person.name });
   $("#pin-input").value = ""; $("#pin-error").textContent = "";
   if (!matchMedia("(pointer: coarse)").matches) $("#pin-input").focus();  // phones use the keypad, no keyboard pop-up
+}
+
+// Sign-in errors come from the server in English; show them in the chosen language.
+function serverMessage(msg) {
+  let m = msg.match(/^Wrong PIN\. (\d+) tr(?:ies|y) left\.$/);
+  if (m) return t("Wrong PIN. {n} tries left.", { n: m[1] });
+  m = msg.match(/^Too many wrong PINs\. Try again in (\d+) minutes?\.$/);
+  if (m) return t("Too many wrong PINs. Try again in {n} minutes.", { n: m[1] });
+  return t(msg);
 }
 
 async function signIn(e) {
@@ -1363,7 +1386,7 @@ async function signIn(e) {
     await api("POST", "/api/auth/signin", { profile_id: gate.person.id, pin });
     location.reload();
   } catch (err) {
-    $("#pin-error").textContent = err.message;
+    $("#pin-error").textContent = serverMessage(err.message);
     $("#pin-input").value = "";
   }
 }
@@ -1394,6 +1417,7 @@ function bindGate() {
 
 // ── People (Settings) ────────────────────────────────────────────────────────
 async function loadPeople() {
+  $("#my-lang").value = I18N.lang;
   const list = await api("GET", "/api/people");
   const owner = !!state.me?.is_owner;
   $("#person-add").hidden = !owner;
@@ -1402,24 +1426,34 @@ async function loadPeople() {
       <td class="num">${owner || p.you ? `<button class="link" data-rename="${p.id}">Rename</button>` : ""}
         ${owner && !p.you ? ` · <button class="link" data-resetpin="${p.id}">Reset PIN</button>` : ""}</td></tr>`).join("")}</tbody></table>`;
   $$("[data-rename]").forEach((b) => b.addEventListener("click", async () => {
-    const name = prompt("New name");
+    const name = prompt(t("New name"));
     if (!name) return;
     try { await api("PATCH", `/api/people/${b.dataset.rename}`, { name }); toast("Renamed"); loadPeople(); } catch (err) { fail(err); }
   }));
   $$("[data-resetpin]").forEach((b) => b.addEventListener("click", async () => {
-    const pin = prompt("New PIN for them (4 to 8 digits). It signs them out on their devices.");
+    const pin = prompt(t("New PIN for them (4 to 8 digits). It signs them out on their devices."));
     if (!pin) return;
     try { await api("PATCH", `/api/people/${b.dataset.resetpin}`, { pin }); toast("PIN changed"); } catch (err) { fail(err); }
   }));
 }
 
+// Each person's language is saved with them, so their phone opens in it too.
+async function changeLanguage(lang) {
+  try {
+    await api("PATCH", `/api/people/${state.me.id}`, { language: lang });
+    try { localStorage.setItem(LANG_KEY, lang); } catch { /* private mode */ }
+    location.reload();
+  } catch (err) { fail(err); }
+}
+
 function bindPeople() {
+  $("#my-lang").addEventListener("change", (e) => changeLanguage(e.target.value));
   $("#person-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     try {
       const p = await api("POST", "/api/people", { name: $("#pf-name").value, pin: $("#pf-pin").value });
       e.target.reset();
-      toast(`Added ${p.name}. They sign in with their name and PIN.`);
+      toast(t("Added {name}. They sign in with their name and PIN.", { name: p.name }));
       loadPeople();
     } catch (err) { fail(err); }
   });
@@ -1439,6 +1473,8 @@ function bindPeople() {
   bindPeople();
   bindPhone();
   const auth = await api("GET", "/api/auth/state").catch(() => null);
+  await setLanguage(auth?.me?.language || storedLang());  // before signing in: this phone's last choice
+  $("#more-lang").textContent = I18N.lang === "ta" ? "English" : "தமிழ்";
   if (!auth?.me) { await showGate(auth || undefined).catch(fail); return; }
   state.me = auth.me;
   $("#who-name").textContent = auth.me.name;

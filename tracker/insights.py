@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 from tracker import db
+from tracker.i18n import say, word
 
 PERIOD_KINDS = ("month", "3m", "fy", "12m")
 PEOPLE_CATEGORY = "Payments to People"
@@ -79,7 +80,8 @@ def _bounds(ym: str) -> tuple[date, date]:
 
 
 def _month_name(ym: str, short: bool = False) -> str:
-    return _bounds(ym)[0].strftime("%b %Y" if short else "%B %Y")
+    d = _bounds(ym)[0]
+    return f"{word(d.strftime('%b' if short else '%B'))} {d.year}"
 
 
 def latest_month(conn: sqlite3.Connection) -> str:
@@ -111,7 +113,7 @@ def resolve_period(kind: str = "month", month: str | None = None, conn: sqlite3.
         return Period(kind, _bounds(first)[0], _bounds(month)[1], f"{_month_name(first, True)} – {_month_name(month, True)}", 12)
     y, m = map(int, month.split("-"))
     fy = y if m >= 4 else y - 1  # Indian financial year: April to March
-    return Period(kind, date(fy, 4, 1), date(fy + 1, 3, 31), f"FY {fy}-{(fy + 1) % 100:02d}", 12)
+    return Period(kind, date(fy, 4, 1), date(fy + 1, 3, 31), say("FY {start}-{end}", start=fy, end=f"{(fy + 1) % 100:02d}"), 12)
 
 
 # ── Loading and classifying ───────────────────────────────────────────────────
@@ -559,63 +561,76 @@ def _inr(v: float) -> str:
     return f"{'−' if v < 0 else ''}₹{digits}"
 
 
+def _pct(v: float) -> str:
+    return f"{v:.0%}"
+
+
 def facts(o: dict) -> list[dict]:
-    """Short observations for the dashboard and the plan. tone: good | warn | info."""
+    """Short observations for the dashboard and the plan, in the signed-in person's language. tone: good | warn | info."""
     out: list[dict] = []
+
+    def add(tone: str, en: str, **params) -> None:
+        out.append({"tone": tone, "text": say(en, **params)})
+
     p = o["period"]
-    so_far = " so far" if p["in_progress"] else ""
+    so_far = say(" so far") if p["in_progress"] else ""
     rate = o["savings_rate"]
     if p["in_progress"] and o["saved"] < 0:
-        out.append({"tone": "info", "text": f"Income so far ({_inr(o['income'] or 0)}) is below spending so far ({_inr(o['spent'])}). "
-                                            "If your salary hasn't come in yet this month, the picture will change when it does."})
+        add("info", "Income so far ({income}) is below spending so far ({spent}). "
+                    "If your salary hasn't come in yet this month, the picture will change when it does.",
+            income=_inr(o["income"] or 0), spent=_inr(o["spent"]))
     elif o["income"] and rate is not None and rate < 0:
-        out.append({"tone": "warn", "text": f"You spent {_inr(-o['saved'])} more than came in during {p['label']}."})
+        add("warn", "You spent {amount} more than came in during {period}.", amount=_inr(-o["saved"]), period=p["label"])
     elif o["income"]:
         tone = "good" if rate >= 0.2 else ("warn" if rate < 0.1 else "info")
-        out.append({"tone": tone, "text": f"You kept {rate:.0%} of your income{so_far} in {p['label']} "
-                                         f"({_inr(o['saved'])} of {_inr(o['income'])}). A common target is 20% or more."})
+        add(tone, "You kept {rate} of your income{so_far} in {period} ({saved} of {income}). A common target is 20% or more.",
+            rate=_pct(rate), so_far=so_far, period=p["label"], saved=_inr(o["saved"]), income=_inr(o["income"]))
     if o["invested"] and o["income"] and o["invest_rate"] <= 1:
-        out.append({"tone": "good", "text": f"{_inr(o['invested'])} went into investments ({o['invest_rate']:.0%} of income)."})
+        add("good", "{amount} went into investments ({rate} of income).", amount=_inr(o["invested"]), rate=_pct(o["invest_rate"]))
     elif o["invested"]:
-        out.append({"tone": "good", "text": f"{_inr(o['invested'])} went into investments."})
+        add("good", "{amount} went into investments.", amount=_inr(o["invested"]))
     ups = [c for c in o["categories"] if c["change_pct"] is not None and c["change_pct"] >= 0.2 and c["amount"] - (c["usual"] or 0) >= 500]
     for c in sorted(ups, key=lambda c: -(c["amount"] - c["usual"]))[:3]:
-        out.append({"tone": "warn", "text": f"{c['name']}: {_inr(c['amount'])}{so_far}, {c['change_pct']:.0%} above your usual "
-                                            f"{_inr(c['usual'])} for this point."})
+        add("warn", "{name}: {amount}{so_far}, {pct} above your usual {usual} for this point.",
+            name=word(c["name"]), amount=_inr(c["amount"]), so_far=so_far, pct=_pct(c["change_pct"]), usual=_inr(c["usual"]))
     downs = [c for c in o["categories"] if c["change_pct"] is not None and c["change_pct"] <= -0.2 and (c["usual"] or 0) - c["amount"] >= 500]
     for c in sorted(downs, key=lambda c: c["amount"] - c["usual"])[:2]:
-        out.append({"tone": "good", "text": f"{c['name']}: {_inr(c['amount'])}, {abs(c['change_pct']):.0%} below your usual {_inr(c['usual'])}."})
+        add("good", "{name}: {amount}, {pct} below your usual {usual}.",
+            name=word(c["name"]), amount=_inr(c["amount"]), pct=_pct(abs(c["change_pct"])), usual=_inr(c["usual"]))
     for c in o["categories"]:
         if c["budget_used"] is not None and c["budget_used"] > 1:
-            out.append({"tone": "warn", "text": f"{c['name']} is over budget: {_inr(c['amount'])} of {_inr(c['budget'])}."})
+            add("warn", "{name} is over budget: {amount} of {budget}.", name=word(c["name"]), amount=_inr(c["amount"]), budget=_inr(c["budget"]))
     if o["recurring_monthly"]:
         share = o["recurring_share_of_income"]
-        out.append({"tone": "info", "text": f"Regular commitments (rent, EMIs, SIPs, subscriptions) come to about {_inr(o['recurring_monthly'])} a month"
-                                            + (f", {share:.0%} of your usual income." if share else ".")})
+        if share:
+            add("info", "Regular commitments (rent, EMIs, SIPs, subscriptions) come to about {amount} a month, {share} of your usual income.",
+                amount=_inr(o["recurring_monthly"]), share=_pct(share))
+        else:
+            add("info", "Regular commitments (rent, EMIs, SIPs, subscriptions) come to about {amount} a month.", amount=_inr(o["recurring_monthly"]))
     for c in o["categories"]:
         for ch in c["children"]:
             if ch["name"] == "Food Delivery" and ch["count"] >= 6:
-                out.append({"tone": "info", "text": f"{ch['count']} food delivery orders{so_far}, {_inr(ch['amount'])} in total "
-                                                    f"(about {_inr(ch['amount'] / ch['count'])} each)."})
+                add("info", "{count} food delivery orders{so_far}, {amount} in total (about {each} each).",
+                    count=ch["count"], so_far=so_far, amount=_inr(ch["amount"]), each=_inr(ch["amount"] / ch["count"]))
     cash = next((c for c in o["categories"] if c["name"] == "Cash Withdrawal"), None)
     if cash and o["spent"] and cash["amount"] / o["spent"] >= 0.1:
-        out.append({"tone": "info", "text": f"{_inr(cash['amount'])} was withdrawn as cash ({cash['share']:.0%} of spending), so where it went isn't tracked."})
+        add("info", "{amount} was withdrawn as cash ({share} of spending), so where it went isn't tracked.",
+            amount=_inr(cash["amount"]), share=_pct(cash["share"]))
     if o["people_total"] and o["spent"] and o["people_total"] / o["spent"] >= 0.1:
-        out.append({"tone": "info", "text": f"{_inr(o['people_total'])} went to individuals by UPI/IMPS. Splitting these into what they were for "
-                                            "(rent, household help, family) sharpens the picture."})
+        add("info", "{amount} went to individuals by UPI/IMPS. Splitting these into what they were for "
+                    "(rent, household help, family) sharpens the picture.", amount=_inr(o["people_total"]))
     gap = o.get("card_bills_not_itemised") or {}
     if gap.get("amount", 0) >= 500:
-        out.append({"tone": "warn", "text": f"{_inr(gap['amount'])} went to credit card bills{so_far} with no card statement "
-                                            "imported for them, so what you bought with the card isn't in these numbers. "
-                                            "Import your card statements to see it."})
+        add("warn", "{amount} went to credit card bills{so_far} with no card statement imported for them, so what you bought "
+                    "with the card isn't in these numbers. Import your card statements to see it.", amount=_inr(gap["amount"]), so_far=so_far)
     if o.get("card_spent") and o["spent"] and o["card_spent"] > 0:
-        out.append({"tone": "info", "text": f"{_inr(o['card_spent'])} of your spending{so_far} was on credit cards "
-                                            f"({o['card_spent'] / o['spent']:.0%})."})
+        add("info", "{amount} of your spending{so_far} was on credit cards ({share}).",
+            amount=_inr(o["card_spent"]), so_far=so_far, share=_pct(o["card_spent"] / o["spent"]))
     for c in o.get("cards") or []:
         if c.get("status") in ("overdue", "part_paid"):
-            out.append({"tone": "warn", "text": f"{c['name']}: the bill of {_inr(c['total_due'])} was due on {c['due_date']} "
-                                                f"and {_inr(c['left_to_pay'])} is still unpaid as far as your statements show."})
+            add("warn", "{name}: the bill of {total} was due on {due} and {left} is still unpaid as far as your statements show.",
+                name=c["name"], total=_inr(c["total_due"]), due=c["due_date"], left=_inr(c["left_to_pay"]))
     unc = next((c for c in o["categories"] if c["name"] == "Uncategorized"), None)
     if unc and unc["amount"] >= 1000:
-        out.append({"tone": "info", "text": f"{_inr(unc['amount'])} is still uncategorized: see the Review tab."})
+        add("info", "{amount} is still uncategorized: see the Review tab.", amount=_inr(unc["amount"]))
     return out

@@ -45,6 +45,7 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 | `tracker/fetch/gmail.py`, `secrets.py` | Gmail (read-only) statement fetch; PDF passwords in Windows Credential Manager via `keyring`. |
 | `tracker/logs.py` | Rotating logs in `data/logs/` (`app.log`, `mcp.log`). |
 | `static/app.js`, `templates/index.html` | Single-page UI, no build step, no framework. Phones (≤760px, `style.css`) get the bottom menu, payment cards and the category picker sheet (`openPicker`); the `<select>` stays for computers. |
+| `static/i18n/ta.json`, `static/i18n.js`, `tracker/i18n.py` | English/Tamil. One flat map, English text → Tamil, shared by page and server. Page: `t("{n} …", {n})` for built sentences, `tc(name)` for category names; any other exact-match text is translated by a MutationObserver (payee names, narrations and `[data-noi18n]` are skipped). Server: `i18n.say(en, **params)` / `word()` in the signed-in person's language (`profiles.language`). |
 | `static/manifest.webmanifest`, `static/sw.js`, `static/icons/` | Home-screen app. `app.py` serves the manifest and `/sw.js` at the site root. The service worker caches only `/offline.html` and an icon, never `/api` data. It receives shared statements (POST `/share`) into the `expenses-shared` cache, and `receiveSharedFiles()` uploads and deletes them. |
 | `scripts/hooks/` | Claude Code hooks (see below). |
 | `tests/` | pytest. `helpers.py` builds synthetic statements, `fake_bank.py` is a fake net banking site, `conftest.py` has `FakeClassifier`. |
@@ -66,6 +67,7 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 - Plain `sqlite3` through `db.session()`, which commits on success. No ORM. Use parameterised SQL only.
 - Python 3.12, ruff (`ruff.toml`, 120 columns). Logging via `logging.getLogger(__name__)`, never `print` in library code.
 - API tests sign in first: `helpers.signed_in_client(app_module)` (local client, owner PIN `helpers.OWNER_PIN`). `tests/test_profiles.py` covers isolation between people.
+- Text people see: write it in English and add the Tamil to `static/i18n/ta.json` with the same {placeholders}. Server sentences go through `i18n.say()`; page sentences through `t()`. `tests/test_i18n.py` fails on a missing entry for phone screens, `t()` calls and server sentences. Never compare displayed text in code (it may be Tamil): use data attributes.
 - New behaviour gets a test. Tests use synthetic data only: build statements with `tests/helpers.py`, fake Claude with `FakeClassifier`. A unit test never calls the real API or CLI (`conftest.py` patches `default_classifier`).
 - Card statement tests build files with `helpers.card_csv` or feed `parse_card_text` made-up text in both HDFC layouts (`tests/test_cards.py`).
 - Net banking tests run against `tests/fake_bank.py` in headless Edge. Keep the fake bank as awkward as real banks: auto-numbered ids, scripted downloads, calendar pop-ups.

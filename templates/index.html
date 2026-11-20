@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-v="{{ v }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -250,7 +250,7 @@
         <strong class="dz-phone">Choose a statement</strong>
         <span>Excel (.xls, .xlsx), CSV or PDF from HDFC, City Union Bank and most other banks</span>
       </label>
-      <p class="hint phone-only">Tip: in WhatsApp, Gmail or Files, tap <b>Share</b> on a statement and pick <b>Expenses</b> (after adding the app to your home screen).</p>
+      <p class="hint phone-only">Tip: in WhatsApp, Gmail or Files, tap Share on a statement and pick Expenses (after adding the app to your home screen).</p>
       <div id="imp-results" class="results"></div>
     </div>
     <div class="card">
@@ -330,6 +330,10 @@
           <button class="primary">Add person</button>
         </form>
       </div>
+      <h3>Language</h3>
+      <div class="form-row">
+        <select id="my-lang" aria-label="Language" data-noi18n><option value="en">English</option><option value="ta">தமிழ் (Tamil)</option></select>
+      </div>
       <h3>Your PIN</h3>
       <form id="mypin-form" class="form-row wrap">
         <input id="mp-current" type="password" inputmode="numeric" maxlength="8" placeholder="Current PIN" autocomplete="current-password" required aria-label="Current PIN">
@@ -405,6 +409,7 @@
       <button value="rules">Rules</button>
       <button value="categories">Categories</button>
       <button value="settings">Settings and people</button>
+      <button value="lang" id="more-lang" data-noi18n>தமிழ்</button>
       <button value="signout" class="danger">Sign out</button>
       <button value="cancel" class="ghost">Close</button>
     </div>
@@ -463,6 +468,7 @@
 
 <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<script src="/static/i18n.js?v={{ v }}"></script>
 <script src="/static/app.js?v={{ v }}"></script>
 </body>
 </html>

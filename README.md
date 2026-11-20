@@ -91,6 +91,14 @@ The app works on a phone screen. There's a menu along the bottom (**Home**, **Pa
 
 Nothing financial is stored on the phone. The app keeps only an "app not reachable" page for when the computer is off. A shared statement waits on the phone only until it has been uploaded.
 
+### தமிழ் / Tamil
+
+Everyone can use the app in Tamil. The setting is under **Settings → People → Language**, or **More → தமிழ்** on a phone. It's saved for each person, so a parent's phone opens in Tamil while yours stays in English.
+
+- **What switches to Tamil:** menus, buttons, category names, dates and month names, the "Where the money went" and "What stands out" sentences, and sign-in messages.
+- **What stays as written:** payee names and bank narrations stay exactly as the bank wrote them, and amounts keep the ₹1,23,456 style.
+- **Where the wording lives:** all the Tamil is in one file, `static/i18n/ta.json`, keyed by the English text, so it's easy to review or correct. It's a draft, so have a Tamil reader check it. Anything without a Tamil entry shows in English.
+
 ### Family members: a private space each
 
 Several people can use the app, each in a separate space with their own accounts, statements, categories, budgets and plan. Nobody can see anyone else's.

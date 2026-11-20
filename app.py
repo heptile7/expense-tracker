@@ -141,7 +141,7 @@ def share_without_service_worker():
 def index(request: Request):
     # Version stamp so the browser fetches app.js/style.css again whenever they change.
     static = config.BASE_DIR / "static"
-    version = int(max((static / f).stat().st_mtime for f in ("app.js", "style.css")))
+    version = int(max((static / f).stat().st_mtime for f in ("app.js", "style.css", "i18n.js", "i18n/ta.json")))
     return templates.TemplateResponse(request, "index.html", {"model": config.MODEL_ID, "v": version})
 
 
