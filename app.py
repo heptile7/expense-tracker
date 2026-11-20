@@ -15,7 +15,7 @@ import time
 import uuid
 
 from fastapi import Body, FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import HTTPConnection
@@ -108,6 +108,33 @@ async def _unexpected(request: Request, exc: Exception):
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon():
     return Response(status_code=204)  # the page has an inline icon; keeps 404s out of the log
+
+
+# ── Home-screen app (PWA) ─────────────────────────────────────────────────────
+
+
+@app.get("/manifest.webmanifest", include_in_schema=False)
+def manifest():
+    return FileResponse(config.BASE_DIR / "static" / "manifest.webmanifest", media_type="application/manifest+json")
+
+
+@app.get("/sw.js", include_in_schema=False)
+def service_worker():
+    # At the site root, so it covers the whole app; never cached, so updates arrive straight away.
+    return FileResponse(config.BASE_DIR / "static" / "sw.js", media_type="text/javascript",
+                        headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
+
+
+@app.get("/offline.html", include_in_schema=False)
+def offline_page():
+    return FileResponse(config.BASE_DIR / "static" / "offline.html", media_type="text/html")
+
+
+@app.post("/share", include_in_schema=False)
+def share_without_service_worker():
+    """Statements shared from another app are normally caught by the service worker on the phone. If it
+    isn't running yet, nothing is stored here: the page asks to open the app once and share again."""
+    return RedirectResponse("/?shared=none#import", status_code=303)
 
 
 @app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)

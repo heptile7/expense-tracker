@@ -2,8 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Expenses</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1a1a19" media="(prefers-color-scheme: dark)">
+  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cpath d='M9 22h4v-6H9zm5 0h4V10h-4zm5 0h4v-9h-4z' fill='white'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/style.css?v={{ v }}">
 </head>
@@ -71,7 +75,7 @@
       <div class="seg" id="dash-period" role="tablist" aria-label="Period">
         <button data-p="month" class="active">Month</button>
         <button data-p="3m">3 months</button>
-        <button data-p="fy">Financial year</button>
+        <button data-p="fy"><span class="long">Financial year</span><span class="short">FY</span></button>
         <button data-p="12m">12 months</button>
       </div>
       <select id="dash-month" aria-label="Month"></select>
@@ -197,6 +201,7 @@
 
   <!-- Import -->
   <section id="tab-import" class="tab">
+    <p class="hint phone-only">Fetching straight from net banking happens on the computer. On the phone, choose a statement you've downloaded, or share one here from WhatsApp or Gmail.</p>
     <div class="card" id="nb-card">
       <h2>Fetch from net banking</h2>
       <div class="form-row wrap">
@@ -240,10 +245,12 @@
         </label>
       </div>
       <label id="dropzone" class="dropzone">
-        <input id="imp-file" type="file" multiple accept=".xls,.xlsx,.xlsm,.csv,.txt,.pdf">
-        <strong>Drop statements here or click to choose</strong>
+        <input id="imp-file" type="file" multiple accept=".xls,.xlsx,.xlsm,.csv,.txt,.pdf,application/pdf">
+        <strong class="dz-desktop">Drop statements here or click to choose</strong>
+        <strong class="dz-phone">Choose a statement</strong>
         <span>Excel (.xls, .xlsx), CSV or PDF from HDFC, City Union Bank and most other banks</span>
       </label>
+      <p class="hint phone-only">Tip: in WhatsApp, Gmail or Files, tap <b>Share</b> on a statement and pick <b>Expenses</b> (after adding the app to your home screen).</p>
       <div id="imp-results" class="results"></div>
     </div>
     <div class="card">
@@ -380,6 +387,41 @@
     </div>
   </section>
 </main>
+
+<!-- Phone: menu along the bottom edge, where thumbs reach -->
+<nav id="bottom-nav" class="bottom-nav" aria-label="Sections">
+  <button data-tab="dashboard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11.5 12 5l8 6.5V20h-5.5v-5h-5v5H4z"/></svg>Home</button>
+  <button data-tab="transactions"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M5 12h14M5 18h9"/></svg>Payments</button>
+  <button data-tab="import" class="add"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Add</button>
+  <button data-tab="review"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>Check<span id="review-badge-m" class="badge" hidden></span></button>
+  <button data-more><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01"/></svg>More</button>
+</nav>
+
+<dialog id="dlg-more" class="sheet">
+  <form method="dialog">
+    <div class="sheet-grip" aria-hidden="true"></div>
+    <div class="sheet-list">
+      <button value="plan">Money plan</button>
+      <button value="rules">Rules</button>
+      <button value="categories">Categories</button>
+      <button value="settings">Settings and people</button>
+      <button value="signout" class="danger">Sign out</button>
+      <button value="cancel" class="ghost">Close</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-pick" class="sheet pick">
+  <form method="dialog">
+    <div class="sheet-grip" aria-hidden="true"></div>
+    <h2 id="pk-title" tabindex="-1" autofocus>Choose a category</h2>
+    <p id="pk-sub" class="hint"></p>
+    <input id="pk-search" type="search" placeholder="Search categories" aria-label="Search categories" autocomplete="off">
+    <div id="pk-recent" class="pick-recent"></div>
+    <div id="pk-list" class="pick-list"></div>
+    <button value="cancel" class="ghost pick-cancel">Cancel</button>
+  </form>
+</dialog>
 
 <dialog id="dlg-category">
   <form method="dialog">

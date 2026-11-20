@@ -78,6 +78,19 @@ Low-confidence results land in **Review**. Accepting one turns it into your own 
 
 In **Categories** you can rename categories, add sub-categories, merge categories, hide ones you don't use, and choose whether each is a **need**, a **want** or **savings**. That choice drives the 50/30/20 split.
 
+### On your phone (Android)
+
+The app works on a phone screen. There's a menu along the bottom (**Home**, **Payments**, **Add**, **Check**, **More**), text is larger, and payments show as cards.
+
+- **Install it.** Open the app's address in Chrome and choose **⋮ → Add to Home screen** (or **Install app**). It then opens full screen from its own icon like any other app. Installing needs the private HTTPS address from Tailscale (phase 5 of the plan); on the computer itself, `localhost` works too.
+- **Add a statement:**
+  - **Add → Choose a statement** picks a PDF or Excel file from Downloads or Drive.
+  - **Share:** in WhatsApp, Gmail or Files, tap **Share** on the statement and pick **Expenses**. It's imported straight away.
+- **Fix a category.** Tap the category on a payment for a big, searchable list with your recently used categories first. Then choose "all from this payee" or "just this one". Payments the app is unsure about are highlighted, and **Check** shows them all.
+- **Net banking** fetch stays on the computer, because the bank's window opens there.
+
+Nothing financial is stored on the phone. The app keeps only an "app not reachable" page for when the computer is off. A shared statement waits on the phone only until it has been uploaded.
+
 ### Family members: a private space each
 
 Several people can use the app, each in a separate space with their own accounts, statements, categories, budgets and plan. Nobody can see anyone else's.

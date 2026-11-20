@@ -44,7 +44,8 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 | `tracker/fetch/netbanking.py` | Assisted net banking: Playwright drives the user's Edge; recorder JS + replay. Recorded steps are stored per `route_profile`: the bank (`HDFC`) or its cards (`HDFC:card`). Logs out before every close (`_logout`: learned hint → link/button named Log out → title/alt/id/href attributes → text; then the confirm pop-up; confirmed by "logged out" text or the login form). Logout clicks are never recorded as steps; the one you click yourself is remembered (`netbanking_logout:<bank>`). |
 | `tracker/fetch/gmail.py`, `secrets.py` | Gmail (read-only) statement fetch; PDF passwords in Windows Credential Manager via `keyring`. |
 | `tracker/logs.py` | Rotating logs in `data/logs/` (`app.log`, `mcp.log`). |
-| `static/app.js`, `templates/index.html` | Single-page UI, no build step, no framework. |
+| `static/app.js`, `templates/index.html` | Single-page UI, no build step, no framework. Phones (≤760px, `style.css`) get the bottom menu, payment cards and the category picker sheet (`openPicker`); the `<select>` stays for computers. |
+| `static/manifest.webmanifest`, `static/sw.js`, `static/icons/` | Home-screen app. `app.py` serves the manifest and `/sw.js` at the site root. The service worker caches only `/offline.html` and an icon, never `/api` data. It receives shared statements (POST `/share`) into the `expenses-shared` cache, and `receiveSharedFiles()` uploads and deletes them. |
 | `scripts/hooks/` | Claude Code hooks (see below). |
 | `tests/` | pytest. `helpers.py` builds synthetic statements, `fake_bank.py` is a fake net banking site, `conftest.py` has `FakeClassifier`. |
 

@@ -105,8 +105,7 @@ async function loadMeta() {
 async function refreshBadge() {
   try {
     const { total } = await api("GET", "/api/transactions?needs_review=true&limit=1");
-    const b = $("#review-badge");
-    b.textContent = total; b.hidden = !total;
+    for (const b of [$("#review-badge"), $("#review-badge-m")]) { b.textContent = total; b.hidden = !total; }
   } catch { /* ignore */ }
 }
 
@@ -124,7 +123,7 @@ const LOADERS = {
 
 function showTab(name) {
   if (!LOADERS[name]) name = "dashboard";
-  $$("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+  $$("#tabs button, #bottom-nav [data-tab]").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
   $$(".tab").forEach((t) => t.classList.toggle("active", t.id === `tab-${name}`));
   if (location.hash !== `#${name}`) history.replaceState(null, "", `#${name}`);
   hideTip();
@@ -486,7 +485,8 @@ function txnRow(t, withCheckbox = false) {
     <td><div class="payee" data-open="${t.id}" tabindex="0">${esc(t.counterparty || "Unknown")}</div>
         <div class="narr" title="${esc(t.narration_raw)}">${esc(t.narration_raw)}</div></td>
     <td class="num ${t.direction === "credit" ? "amt-credit" : ""}">${sign}${money(t.amount)}<div class="acct">${esc(t.account_name)}</div></td>
-    <td><select class="cat-select" data-id="${t.id}" data-current="${t.category_id}" aria-label="Category">${categoryOptions(t.category_id)}</select></td>
+    <td class="cat-cell"><select class="cat-select" data-id="${t.id}" data-current="${t.category_id}" aria-label="Category">${categoryOptions(t.category_id)}</select>
+        <button type="button" class="cat-chip${t.needs_review ? " unsure" : ""}" data-pick="${t.id}">${esc(t.category || "Uncategorized")}<span aria-hidden="true">▾</span></button></td>
     <td class="how">${t.needs_review ? '<span class="dot" title="Needs review"></span>' : ""}${(HOW[t.category_source] || (() => ""))(t)}</td>
   </tr>`;
 }
@@ -538,9 +538,60 @@ function openTxns(filters = {}) {
   showTab("transactions");
 }
 
+// ── Category picker (phones): a big, searchable list instead of a tiny dropdown ──
+const RECENT_KEY = "et.recentCategories";
+const recentCategories = () => { try { return JSON.parse(localStorage.getItem(RECENT_KEY) || "[]"); } catch { return []; } };
+function rememberCategory(id) {
+  try { localStorage.setItem(RECENT_KEY, JSON.stringify([id, ...recentCategories().filter((x) => x !== id)].slice(0, 6))); } catch { /* private mode */ }
+}
+const PICK_GROUPS = { expense: "Spending", income: "Money in", transfer: "Not counted (your own money moving)" };
+
+function openPicker(txnId) {
+  const sel = $(`.cat-select[data-id="${txnId}"]`);
+  const row = sel?.closest("tr");
+  if (!sel) return;
+  const cats = (state.meta?.categories || []).filter((c) => c.is_active);
+  const byId = new Map(cats.map((c) => [c.id, c]));
+  $("#pk-title").textContent = row?.querySelector(".payee")?.textContent || "Choose a category";
+  $("#pk-sub").textContent = [row?.querySelector(".num")?.firstChild?.textContent, row?.querySelector(".date")?.textContent].filter(Boolean).join(" · ");
+  const item = (c) => `<button type="button" class="pick-item${c.parent_id ? " sub" : ""}${String(c.id) === sel.value ? " current" : ""}" data-cat="${c.id}">${esc(c.name)}</button>`;
+  const recent = recentCategories().map((id) => byId.get(id)).filter(Boolean);
+  $("#pk-recent").innerHTML = recent.length ? `<div class="pick-label">Recently used</div><div class="chips">${recent.map((c) =>
+    `<button type="button" class="chip" data-cat="${c.id}">${esc(c.name)}</button>`).join("")}</div>` : "";
+  $("#pk-list").innerHTML = Object.entries(PICK_GROUPS).map(([kind, label]) => {
+    const group = cats.filter((c) => c.kind === kind);
+    return group.length ? `<div class="pick-label">${label}</div>${group.map(item).join("")}` : "";
+  }).join("");
+  $("#pk-search").value = "";
+  const dlg = $("#dlg-pick");
+  dlg.dataset.txn = txnId;
+  dlg.showModal();
+}
+
+function filterPicker() {
+  const q = $("#pk-search").value.trim().toLowerCase();
+  $$("#pk-list .pick-item").forEach((b) => { b.hidden = q && !b.textContent.toLowerCase().includes(q); });
+  $$("#pk-list .pick-label").forEach((l) => {
+    let n = l.nextElementSibling, any = false;
+    while (n && !n.classList.contains("pick-label")) { if (!n.hidden) any = true; n = n.nextElementSibling; }
+    l.hidden = !any;
+  });
+  $("#pk-recent").hidden = !!q;
+}
+
+function pickCategory(catId) {
+  const dlg = $("#dlg-pick");
+  const sel = $(`.cat-select[data-id="${dlg.dataset.txn}"]`);
+  dlg.close();
+  if (!sel || sel.value === String(catId)) return;
+  rememberCategory(+catId);
+  sel.value = String(catId);
+  onCategoryChange(sel);  // same flow as the dropdown: "all from this payee" or "just this one"
+}
+
 async function onCategoryChange(sel) {
   const id = +sel.dataset.id, prev = sel.dataset.current, catId = +sel.value;
-  const catName = sel.options[sel.selectedIndex].text;
+  const catName = sel.options[sel.selectedIndex].text.replace(/^[\s ]*↳\s*/, "");
   try {
     const t = await api("GET", `/api/transactions/${id}`);
     const payee = t.counterparty || "this payee";
@@ -996,6 +1047,50 @@ async function loadUsage() {
 }
 
 // ── Events ───────────────────────────────────────────────────────────────────
+function bindPhone() {
+  $$("#bottom-nav [data-tab]").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
+  $("#bottom-nav [data-more]").addEventListener("click", async () => {
+    const choice = await ask($("#dlg-more"));
+    if (choice === "signout") {
+      await api("POST", "/api/auth/signout").catch(() => {});
+      location.reload();
+    } else if (LOADERS[choice]) showTab(choice);
+  });
+  document.addEventListener("click", (e) => {
+    const chip = e.target.closest("[data-pick]");
+    if (chip) openPicker(chip.dataset.pick);
+    const cat = e.target.closest("#dlg-pick [data-cat]");
+    if (cat) pickCategory(cat.dataset.cat);
+  });
+  $("#pk-search").addEventListener("input", filterPicker);
+  if ("serviceWorker" in navigator && window.isSecureContext) {
+    navigator.serviceWorker.register("/sw.js").catch(() => { /* the app works without it; only sharing needs it */ });
+  }
+}
+
+// Statements shared from WhatsApp/Gmail/Files: the service worker parked them; upload them now.
+async function receiveSharedFiles() {
+  const params = new URLSearchParams(location.search);
+  const shared = params.get("shared");
+  if (shared === null) return;
+  history.replaceState(null, "", "/#import");
+  showTab("import");
+  if (shared === "none" || !("caches" in window)) {
+    toast("To share statements into Expenses, open the app from your home screen once, then share again.", 8000);
+    return;
+  }
+  const cache = await caches.open("expenses-shared");
+  const files = [];
+  for (const req of await cache.keys()) {
+    const res = await cache.match(req);
+    const blob = await res.blob();
+    files.push(new File([blob], decodeURIComponent(res.headers.get("X-Filename") || "statement.pdf"), { type: blob.type }));
+    await cache.delete(req);
+  }
+  if (files.length) await handleFiles(files);
+  else toast("Nothing arrived to import. Share a PDF or Excel statement.");
+}
+
 function bind() {
   $$("#tabs button").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
   window.addEventListener("hashchange", () => showTab(currentTab()));
@@ -1342,6 +1437,7 @@ function bindPeople() {
   bind();
   bindGate();
   bindPeople();
+  bindPhone();
   const auth = await api("GET", "/api/auth/state").catch(() => null);
   if (!auth?.me) { await showGate(auth || undefined).catch(fail); return; }
   state.me = auth.me;
@@ -1350,4 +1446,5 @@ function bindPeople() {
   try { await loadMeta(); } catch (err) { fail(err); }
   refreshBadge();
   showTab(currentTab());
+  receiveSharedFiles().catch(fail);
 })();

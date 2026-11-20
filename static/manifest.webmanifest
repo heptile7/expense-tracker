@@ -1,0 +1,37 @@
+{
+  "name": "Expenses",
+  "short_name": "Expenses",
+  "description": "Where your money goes, from your own bank statements",
+  "id": "/",
+  "start_url": "/?source=homescreen",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f9f9f7",
+  "theme_color": "#2a78d6",
+  "icons": [
+    { "src": "/static/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "share_target": {
+    "action": "/share",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "files": [
+        {
+          "name": "file",
+          "accept": [
+            "application/pdf", ".pdf",
+            "application/vnd.ms-excel", ".xls",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx",
+            "text/csv", ".csv"
+          ]
+        }
+      ]
+    }
+  }
+}
