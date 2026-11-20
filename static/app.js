@@ -119,7 +119,7 @@ const LOADERS = {
   import: () => Promise.all([loadStatements(), loadNetbanking()]),
   rules: () => loadRules(),
   categories: () => loadCategories(),
-  settings: () => Promise.all([loadPeople(), loadAccounts(), loadGmail(), loadUsage()]),
+  settings: () => Promise.all([loadPeople(), loadRemote(), loadBackup(), loadAccounts(), loadGmail(), loadUsage()]),
 };
 
 function showTab(name) {
@@ -1446,6 +1446,79 @@ async function changeLanguage(lang) {
   } catch (err) { fail(err); }
 }
 
+// ── Phone access (Tailscale) and backups: the owner's Settings ──────────────
+async function loadRemote() {
+  $("#remote-card").hidden = !state.me?.is_owner;
+  if (!state.me?.is_owner) return;
+  renderRemote(await api("GET", "/api/remote"));
+}
+
+function renderRemote(s) {
+  const step = (ok, text, todo = "") => `<li class="${ok ? "ok" : ""}"><span class="tick" aria-hidden="true">${ok ? "✓" : "○"}</span>
+    <span>${text}${!ok && todo ? `<div class="hint">${todo}</div>` : ""}</span></li>`;
+  $("#remote-steps").innerHTML = [
+    step(s.installed, "Tailscale is installed on this computer", "Install it from tailscale.com/download (Windows), then sign in."),
+    step(s.signed_in, "This computer is signed in to Tailscale", "Open Tailscale from the taskbar and sign in."),
+    step(s.serving, "The app is shared on your private network",
+      s.on_this_computer ? "Click “Turn on phone access” below." : "Turn it on from the computer that runs the app."),
+  ].join("") + (s.serving && s.address ? `<li class="ok"><span class="tick" aria-hidden="true">✓</span><span>${t("Open this on the phones:")}
+      <div class="address"><a href="${esc(s.address)}" data-noi18n>${esc(s.address)}</a>
+      <button type="button" class="link" id="remote-copy">${t("Copy")}</button></div></span></li>` : "");
+  const can = s.on_this_computer && s.installed && s.signed_in;
+  $("#remote-actions").innerHTML = can
+    ? (s.serving ? `<button class="ghost" data-remote="off">Turn off phone access</button>` : `<button class="primary" data-remote="on">Turn on phone access</button>`)
+    : "";
+  $$("[data-remote]").forEach((b) => b.addEventListener("click", () => switchRemote(b.dataset.remote, b)));
+  $("#remote-copy")?.addEventListener("click", () => navigator.clipboard?.writeText(s.address).then(() => toast(t("Copied")), () => {}));
+}
+
+async function switchRemote(action, button) {
+  button.disabled = true;
+  $("#remote-output").hidden = true;
+  try {
+    const r = await api("POST", `/api/remote/${action}`);
+    renderRemote({ ...r, on_this_computer: true });
+    // The first time, Tailscale asks to turn on HTTPS for your network and prints the link to do that.
+    if (!r.ok && r.output) { $("#remote-output").textContent = r.output; $("#remote-output").hidden = false; }
+  } catch (err) { fail(err); } finally { button.disabled = false; }
+}
+
+async function loadBackup() {
+  $("#backup-card").hidden = !state.me?.is_owner;
+  if (!state.me?.is_owner) return;
+  renderBackup(await api("GET", "/api/backup"));
+}
+
+function renderBackup(b) {
+  if (document.activeElement !== $("#bk-folder")) $("#bk-folder").value = b.folder || "";
+  $("#bk-folder").disabled = b.on_this_computer === false;
+  $("#bk-suggest").hidden = !b.suggestion || b.folder === b.suggestion || b.on_this_computer === false;
+  $("#bk-suggest").dataset.path = b.suggestion || "";
+  $("#bk-run").disabled = !b.folder;
+  $("#bk-status").textContent = !b.folder ? t("No backup folder yet.")
+    : b.last ? t("Last backup {when}; next around {next}.", { when: fmtDateTime(b.last), next: fmtDateTime(b.next) })
+    : t("No backup yet: the first one runs within the hour.");
+}
+
+const fmtDateTime = (iso) => new Date(iso).toLocaleString(I18N.locale, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+
+function bindBackup() {
+  $("#backup-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try { renderBackup({ ...(await api("PUT", "/api/backup", { folder: $("#bk-folder").value })), on_this_computer: true }); toast(t("Backup folder saved")); }
+    catch (err) { fail(err); }
+  });
+  $("#bk-suggest").addEventListener("click", () => { $("#bk-folder").value = $("#bk-suggest").dataset.path; $("#backup-form").requestSubmit(); });
+  $("#bk-run").addEventListener("click", async (e) => {
+    e.target.disabled = true;
+    try {
+      const r = await api("POST", "/api/backup/run");
+      renderBackup({ ...r, on_this_computer: true });
+      toast(t("Backed up {n} databases.", { n: r.databases }));
+    } catch (err) { fail(err); } finally { e.target.disabled = false; }
+  });
+}
+
 function bindPeople() {
   $("#my-lang").addEventListener("change", (e) => changeLanguage(e.target.value));
   $("#person-form").addEventListener("submit", async (e) => {
@@ -1471,6 +1544,7 @@ function bindPeople() {
   bind();
   bindGate();
   bindPeople();
+  bindBackup();
   bindPhone();
   const auth = await api("GET", "/api/auth/state").catch(() => null);
   await setLanguage(auth?.me?.language || storedLang());  // before signing in: this phone's last choice

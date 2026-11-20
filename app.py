@@ -21,7 +21,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.requests import HTTPConnection
 
 import config
-from tracker import advisor, db, flow, insights, logs, profiles, service
+from tracker import advisor, backup, db, flow, insights, logs, profiles, remote, service
 from tracker.fetch import gmail, netbanking, secrets
 from tracker.importer import NeedsAccount
 from tracker.parsers import SUPPORTED, PasswordRequired, StatementError
@@ -149,14 +149,17 @@ def index(request: Request):
 
 
 def _https(request: Request) -> bool:
-    return request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    host = (request.headers.get("host") or "").split(":")[0]
+    return request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https" or host.endswith(".ts.net")
 
 
 def _direct_local(request: Request) -> bool:
     """A request made on this computer itself, not relayed by a proxy (Tailscale serve, a tunnel...)."""
     host = request.client.host if request.client else ""
     relayed = any(h in request.headers for h in ("x-forwarded-for", "x-forwarded-host", "forwarded", "tailscale-user-login"))
-    return host in ("127.0.0.1", "::1", "localhost") and not relayed
+    # Opened as http://127.0.0.1:8765 or localhost, not by the computer's Tailscale name (*.ts.net).
+    addressed = (request.headers.get("host") or "").rsplit(":", 1)[0].strip("[]") in ("127.0.0.1", "localhost", "::1")
+    return host in ("127.0.0.1", "::1", "localhost") and not relayed and addressed
 
 
 def _signed_in(person: profiles.Profile) -> JSONResponse:
@@ -253,6 +256,47 @@ def update_person(profile_id: int, request: Request, body: dict = Body(...)):
     if profile_id == me.id and body.get("pin") is not None:
         _with_session(response, request, person)  # a new PIN signs out other devices, but keeps you signed in here
     return response
+
+
+# ── Phone access and backups (the owner, and changes only on this computer) ───
+
+
+def _on_this_computer(request: Request, what: str) -> None:
+    _require_owner(request)
+    if not _direct_local(request):
+        raise PermissionError(f"{what} only on the computer that runs the app.")
+
+
+@app.get("/api/remote")
+def remote_status(request: Request):
+    _require_owner(request)
+    return {**remote.status(), "on_this_computer": _direct_local(request)}
+
+
+@app.post("/api/remote/{action}")
+def remote_switch(action: str, request: Request):
+    _on_this_computer(request, "Phone access can be turned on or off")
+    if action not in ("on", "off"):
+        raise service.NotFound(f"Unknown action {action}")
+    return remote.turn_on() if action == "on" else remote.turn_off()
+
+
+@app.get("/api/backup")
+def backup_settings(request: Request):
+    _require_owner(request)
+    return {**backup.settings(), "on_this_computer": _direct_local(request)}
+
+
+@app.put("/api/backup")
+def backup_folder(request: Request, body: dict = Body(...)):
+    _on_this_computer(request, "The backup folder can be chosen")
+    return backup.set_folder(body.get("folder"))
+
+
+@app.post("/api/backup/run")
+def backup_now(request: Request):
+    _require_owner(request)
+    return backup.run()
 
 
 @app.get("/api/meta")
@@ -601,5 +645,11 @@ def llm_usage():
 if __name__ == "__main__":
     import uvicorn
 
+    # Started in the background (pythonw.exe at Windows sign-in) there is no console: give prints somewhere to go.
+    if sys.stdout is None or sys.stderr is None:
+        sys.stdout = sys.stderr = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
+    backup.start_scheduler()  # a weekly copy of everyone's data, once a backup folder is chosen
     # log_config=None: keep our logging setup instead of uvicorn's own (requests are logged by the middleware).
-    uvicorn.run(app, host=config.HOST, port=config.PORT, log_config=None)
+    # Only this computer can connect (config.HOST); phones come through Tailscale's relay on this computer,
+    # whose X-Forwarded-For / -Proto headers are trusted from 127.0.0.1 only.
+    uvicorn.run(app, host=config.HOST, port=config.PORT, log_config=None, proxy_headers=True, forwarded_allow_ips="127.0.0.1")

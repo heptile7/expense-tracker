@@ -344,6 +344,23 @@
         Changing a PIN signs that person out on their other devices. Your Claude subscription only categorizes your own data;
         other people's spaces use a Claude API key or the offline categorizer.</p>
     </div>
+    <div class="card" id="remote-card" hidden>
+      <h2>Phone access</h2>
+      <p class="hint">Phones open the app through Tailscale, a free private network: only your devices, and people you share this computer with, can reach it. Nothing is opened to the internet.</p>
+      <ul id="remote-steps" class="checklist"></ul>
+      <div class="toolbar wrap" id="remote-actions"></div>
+      <pre id="remote-output" class="mono output" hidden></pre>
+    </div>
+    <div class="card" id="backup-card" hidden>
+      <h2>Backups</h2>
+      <p class="hint">Once a week, a copy of everyone's data goes to a folder you choose, for example in OneDrive. The last 8 copies are kept. Keep that folder private: it holds everyone's transactions.</p>
+      <form id="backup-form" class="form-row wrap">
+        <input id="bk-folder" class="grow" placeholder="Backup folder, e.g. C:\Users\you\OneDrive\Expenses backups" aria-label="Backup folder" spellcheck="false">
+        <button class="secondary">Save folder</button>
+        <button type="button" class="link" id="bk-suggest" hidden>Use OneDrive</button>
+      </form>
+      <div class="toolbar wrap"><button class="primary" id="bk-run">Back up now</button><span id="bk-status" class="hint"></span></div>
+    </div>
     <div class="card">
       <h2>Accounts</h2>
       <div class="table-wrap">

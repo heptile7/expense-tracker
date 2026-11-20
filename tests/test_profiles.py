@@ -36,7 +36,7 @@ def _sign_in(client, name, pin):
 
 
 def test_nothing_without_signing_in(app_module):
-    c = TestClient(app_module.app, client=("127.0.0.1", 50000))
+    c = TestClient(app_module.app, client=("127.0.0.1", 50000), base_url="http://127.0.0.1:8765")
     assert c.get("/").status_code == 200  # the page itself shows the sign-in screen
     for path in ("/api/meta", "/api/transactions", "/api/where", "/api/accounts", "/api/openapi.json"):
         r = c.get(path)
@@ -47,9 +47,9 @@ def test_nothing_without_signing_in(app_module):
 
 def test_setup_only_on_this_computer(app_module):
     assert _phone(app_module).post("/api/auth/setup", json={"name": "Phone", "pin": "1234"}).status_code == 403
-    relayed = TestClient(app_module.app, client=("127.0.0.1", 50000), headers={"X-Forwarded-For": "100.64.0.9"})
+    relayed = TestClient(app_module.app, client=("127.0.0.1", 50000), base_url="http://127.0.0.1:8765", headers={"X-Forwarded-For": "100.64.0.9"})
     assert relayed.post("/api/auth/setup", json={"name": "Relay", "pin": "1234"}).status_code == 403
-    c = TestClient(app_module.app, client=("127.0.0.1", 50000))
+    c = TestClient(app_module.app, client=("127.0.0.1", 50000), base_url="http://127.0.0.1:8765")
     assert c.post("/api/auth/setup", json={"name": "Hema", "pin": "12"}).status_code == 400  # PIN too short
     r = c.post("/api/auth/setup", json={"name": "Hema", "pin": OWNER_PIN})
     assert r.status_code == 200 and r.json()["me"]["is_owner"]

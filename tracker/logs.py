@@ -10,6 +10,7 @@ numbers, search text, passwords or API keys. Log by id and count, not by content
 
 import logging
 import logging.handlers
+import sys
 from pathlib import Path
 
 import config
@@ -35,7 +36,8 @@ def setup(name: str = "app", level: int = logging.INFO, console: bool = True) ->
         fh._et_path = str(path)
         fh.setFormatter(logging.Formatter(FORMAT))
         root.addHandler(fh)
-    if console and not any(getattr(h, "_et_console", False) for h in root.handlers):
+    # No console when started in the background (pythonw.exe at Windows sign-in): stderr is None there.
+    if console and sys.stderr is not None and not any(getattr(h, "_et_console", False) for h in root.handlers):
         ch = logging.StreamHandler()  # stderr
         ch._et_console = True
         ch.setFormatter(logging.Formatter(FORMAT))

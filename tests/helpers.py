@@ -11,7 +11,7 @@ def signed_in_client(app_module, **kwargs):
     """A TestClient on this computer, signed in as the owner (setting sign-in up on first use)."""
     from fastapi.testclient import TestClient
 
-    client = TestClient(app_module.app, client=("127.0.0.1", 50000), **kwargs)
+    client = TestClient(app_module.app, client=("127.0.0.1", 50000), base_url="http://127.0.0.1:8765", **kwargs)
     if client.get("/api/auth/state").json()["setup_needed"]:
         client.post("/api/auth/setup", json={"name": "Test User", "pin": OWNER_PIN}).raise_for_status()
     else:

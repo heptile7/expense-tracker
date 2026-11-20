@@ -375,6 +375,14 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.35); }
   max-width: calc(100% - 32px);
 }
 
+/* Phone access checklist and command output */
+.checklist { list-style: none; padding: 0; margin: 8px 0 12px; display: grid; gap: 10px; }
+.checklist li { display: flex; gap: 10px; align-items: baseline; }
+.checklist .tick { width: 18px; flex: none; color: var(--muted); font-weight: 600; }
+.checklist li.ok .tick { color: var(--good-text); }
+.checklist .address { margin-top: 4px; display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; font-size: 16px; font-weight: 600; word-break: break-all; }
+pre.output { white-space: pre-wrap; background: var(--surface-2); padding: 10px 12px; border-radius: 8px; max-height: 220px; overflow: auto; }
+
 /* Tamil: taller letters need a little more line height */
 html[lang="ta"] body { line-height: 1.6; }
 

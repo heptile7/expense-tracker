@@ -82,7 +82,7 @@ In **Categories** you can rename categories, add sub-categories, merge categorie
 
 The app works on a phone screen. There's a menu along the bottom (**Home**, **Payments**, **Add**, **Check**, **More**), text is larger, and payments show as cards.
 
-- **Install it.** Open the app's address in Chrome and choose **⋮ → Add to Home screen** (or **Install app**). It then opens full screen from its own icon like any other app. Installing needs the private HTTPS address from Tailscale (phase 5 of the plan); on the computer itself, `localhost` works too.
+- **Install it.** Open the app's address in Chrome and choose **⋮ → Add to Home screen** (or **Install app**). It then opens full screen from its own icon like any other app. Installing needs the private HTTPS address from [phone access](#phone-access-for-the-family-tailscale). On the computer itself, `localhost` works too.
 - **Add a statement:**
   - **Add → Choose a statement** picks a PDF or Excel file from Downloads or Drive.
   - **Share:** in WhatsApp, Gmail or Files, tap **Share** on the statement and pick **Expenses**. It's imported straight away.
@@ -90,6 +90,36 @@ The app works on a phone screen. There's a menu along the bottom (**Home**, **Pa
 - **Net banking** fetch stays on the computer, because the bank's window opens there.
 
 Nothing financial is stored on the phone. The app keeps only an "app not reachable" page for when the computer is off. A shared statement waits on the phone only until it has been uploaded.
+
+### Phone access for the family (Tailscale)
+
+The app only ever listens on the computer it runs on. Phones reach it through [Tailscale](https://tailscale.com), a free private network. Tailscale gives the computer a private HTTPS address such as `https://home-pc.tail1234.ts.net/`. Only your own devices, and people you share this one computer with, can open it. Nothing is opened to the internet; don't turn on Tailscale's *Funnel*, which would publish it. Everyone still signs in with their own PIN.
+
+**On the computer (once):**
+
+1. Install Tailscale for Windows from [tailscale.com/download](https://tailscale.com/download) and sign in.
+2. Make the app start by itself when you sign in to Windows, with no window. Run this once from the project folder:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\windows\install-autostart.ps1
+   ```
+
+   `scripts\windows\remove-autostart.ps1` undoes it. Only one copy of the app can run at a time, so stop one you started by hand first.
+3. Keep the computer from sleeping while it's plugged in: **Windows Settings → System → Power → Screen, sleep & hibernate → "When plugged in, put my device to sleep after": Never**. Phones can only reach the app while the computer is on and awake.
+4. In the app, on the computer: **Settings → Phone access → Turn on phone access.** This runs [`tailscale serve --bg 8765`](https://tailscale.com/docs/reference/tailscale-cli/serve), which keeps working after restarts. The first time, Tailscale may show a link to enable HTTPS for your network. Open it, click **Enable**, and press the button again. The panel then shows the address to open on the phones.
+5. **Settings → Backups → Use OneDrive** (or type another folder), then **Back up now**. After that, a copy of everyone's data goes there every week.
+
+**Your phone:** install Tailscale from the Play Store and sign in with the same account. Open the address in Chrome, sign in with your PIN, then **⋮ → Add to Home screen**.
+
+**Each parent's phone:**
+
+1. Add them in **Settings → People** with a PIN you agree on.
+2. On their phone, install Tailscale from the Play Store and sign in with *their own* Google account.
+3. [Share this computer](https://tailscale.com/docs/features/sharing) with them: in the Tailscale admin console, go to **Machines**, open the **⋯** menu on this computer, choose **Share**, and invite their email. They accept on their phone. They see only this computer, nothing else of yours. Sharing works on Tailscale's free Personal plan.
+4. Open the address in Chrome on their phone, tap their name, enter their PIN, and choose **⋮ → Add to Home screen**. On their phone, **More → தமிழ்** switches the app to Tamil.
+5. To add a statement, they open it in WhatsApp or Gmail, tap **Share**, and pick **Expenses**.
+
+On their phones, Tailscale needs to stay connected; it shows as a key icon in Android's status bar. If the app says *"Can't reach the app"*, the computer is off, asleep or offline. **Settings → Phone access → Turn off phone access** closes the link again.
 
 ### தமிழ் / Tamil
 
