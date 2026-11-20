@@ -7,7 +7,10 @@ SERVICE = "expense-tracker"
 
 
 def _key(account_id: int) -> str:
-    return f"pdf-password:{account_id}"
+    from tracker import profiles
+
+    p = profiles.current()
+    return f"pdf-password:{account_id}" if p is None or p.is_owner else f"pdf-password:{p.slug}:{account_id}"
 
 
 def get_pdf_password(account_id: int) -> str | None:

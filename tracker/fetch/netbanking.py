@@ -27,8 +27,7 @@ from concurrent.futures import Future
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-import config
-from tracker import db, service
+from tracker import db, profiles, service
 from tracker.fetch.secrets import get_pdf_password
 from tracker.importer import NeedsAccount
 from tracker.parsers import SUPPORTED, PasswordRequired, StatementError
@@ -44,6 +43,23 @@ BANKS = {
 }
 IDLE_TIMEOUT = 20 * 60  # close the browser after 20 minutes without activity
 STEP_TIMEOUT = 30.0
+LOGOUT_TIMEOUT = 15.0  # how long to wait for the bank to confirm the logout
+
+# Logging out before the browser closes: closing only throws away the cookies, while the bank keeps the
+# session alive on its side until it times out.
+_LOGOUT_RE = re.compile(r"\b(log\s*-?\s*(out|off)|sign\s*-?\s*(out|off))\b", re.IGNORECASE)
+_LOGOUT_ATTR_CSS = ", ".join(
+    f"[{attr}*='{word}' i]"
+    for attr in ("title", "aria-label", "alt", "id", "name", "value", "href", "onclick")
+    for word in ("logout", "log out", "log-out", "logoff", "log off", "signout", "sign out", "sign-out")
+)
+_CONFIRM_RE = re.compile(r"^\s*(yes|ok|okay|confirm|continue|log\s*-?\s*(out|off)|sign\s*-?\s*(out|off))\b", re.IGNORECASE)
+_DIALOG_CSS = ("[role=dialog], [role=alertdialog], .modal, [class*='modal' i], [class*='popup' i], [class*='dialog' i], "
+               "[id*='modal' i], [id*='popup' i], [id*='dialog' i]")
+_LOGGED_OUT_RE = re.compile(
+    r"(logged|signed)\s*(out|off)|successfully\s+log|thank\s+you\s+for\s+(banking|using|visiting)|"
+    r"session\s+(has\s+)?(ended|expired|timed\s*out)", re.IGNORECASE,
+)
 _STATEMENT_CONTENT_TYPES = ("application/pdf", "application/vnd.ms-excel", "spreadsheetml", "text/csv")
 
 RECORDER_JS = r"""
@@ -113,6 +129,16 @@ RECORDER_JS = r"""
     });
   }
   const PICKER = '[class*="datepicker" i],[class*="calendar" i],[class*="picker" i],[id*="calendar" i],[id*="datepicker" i]';
+  // A click on the bank's Log out control: never part of a recording, but remembered so the app can log out for you.
+  const LOGOUT = /log\s*-?\s*(out|off)|sign\s*-?\s*(out|off)/i;
+  function isLogout(el) {
+    for (let n = el, i = 0; n && n.nodeType === 1 && i < 4; n = n.parentElement, i++) {
+      const t = (n.innerText || '').length <= 40 ? n.innerText : '';
+      const attrs = ['title', 'aria-label', 'alt', 'id', 'href', 'onclick', 'value'].map((a) => n.getAttribute(a) || '');
+      if (LOGOUT.test([t].concat(attrs).join(' '))) return true;
+    }
+    return false;
+  }
   document.addEventListener('click', (e) => {
     // Only your own clicks: pages also click hidden links by script to start a download.
     if (!e.isTrusted) return;
@@ -122,6 +148,7 @@ RECORDER_JS = r"""
     if (!el || el === document.body || el === document.documentElement) return;
     if (['SELECT', 'OPTION', 'TEXTAREA'].includes(el.tagName)) return;
     if (el.tagName === 'INPUT' && !['submit', 'button', 'image', 'radio', 'checkbox'].includes(el.type)) return;
+    if (isLogout(e.target)) { send(Object.assign({ action: 'logout' }, describe(el))); return; }
     reportDates();
     send(Object.assign({ action: 'click' }, describe(el)));
   }, true);
@@ -179,6 +206,18 @@ def save_route(profile: str, steps: list[dict]) -> dict:
 def forget_route(profile: str) -> None:
     with db.session() as conn:
         conn.execute("DELETE FROM app_settings WHERE key = ?", (_route_key(profile),))
+
+
+def get_logout_hint(bank: str) -> list[str]:
+    """Selectors of the Log out control you clicked at this bank before, tried first when logging out for you."""
+    with db.session() as conn:
+        raw = db.get_setting(conn, f"netbanking_logout:{bank}")
+    return json.loads(raw) if raw else []
+
+
+def save_logout_hint(bank: str, candidates: list[str]) -> None:
+    with db.session() as conn:
+        db.set_setting(conn, f"netbanking_logout:{bank}", json.dumps(candidates[:4]))
 
 
 def login_url(bank: str) -> str:
@@ -324,6 +363,7 @@ class StepNotFound(Exception):
 class NetBankingSession:
     def __init__(self, account: dict, url: str, headless: bool = False, channel: str | None = None):
         self.account = account
+        self.profile_user = profiles.current()  # whose space the downloads go into
         self.bank = account["bank"] if account["bank"] in BANKS else "OTHER"
         self.profile = route_profile(self.bank, account.get("type") == "credit_card")
         self.url = url
@@ -335,6 +375,8 @@ class NetBankingSession:
         self.recording = False
         self.raw_steps: list[dict] = []
         self.progress: str | None = None
+        self.logout: str | None = None  # confirmed | clicked | already | not_found, once the app tried
+        self.logout_failed = False  # couldn't find Log out: the window stays open until you close it anyway
         self.started_at = time.time()
         self._last_activity = time.time()
         self._commands: queue.Queue = queue.Queue()
@@ -375,6 +417,7 @@ class NetBankingSession:
                 "recorded_steps": [describe_step(s) for s in finalize_steps(list(self.raw_steps))] if self.recording else [],
                 "imports": list(self.imports),
                 "has_route": get_route(self.profile) is not None,
+                "logout_failed": self.logout_failed,
             }
 
     # Browser thread
@@ -390,6 +433,10 @@ class NetBankingSession:
             self.progress = progress
 
     def _run(self) -> None:
+        with profiles.use(self.profile_user):
+            self._run_browser()
+
+    def _run_browser(self) -> None:
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
@@ -454,6 +501,9 @@ class NetBankingSession:
 
     def _on_event(self, source, payload) -> None:
         self._last_activity = time.time()
+        if isinstance(payload, dict) and payload.get("action") == "logout":
+            save_logout_hint(self.bank, payload.get("candidates") or [])  # you logged out yourself: remember where
+            return
         if self.recording and isinstance(payload, dict) and payload.get("action") in ("click", "select", "date"):
             with self._lock:
                 self.raw_steps.append(payload)
@@ -468,11 +518,134 @@ class NetBankingSession:
 
     def _closing_message(self) -> str:
         n = sum(1 for i in self.imports if i.get("ok"))
-        return f"Browser closed. {n} statement{'s' if n != 1 else ''} imported." if n else "Browser closed. Nothing was downloaded."
+        bank = BANKS[self.bank]["name"]
+        first = {
+            "confirmed": f"Logged out of {bank} and closed the browser.",
+            "clicked": f"Clicked Log out on {bank} and closed the browser.",
+            "already": "You were logged out. Browser closed.",
+            "not_found": f"Browser closed without logging out: {bank} ends the session itself after a few minutes.",
+        }.get(self.logout or "", "Browser closed.")
+        return f"{first} {n} statement{'s' if n != 1 else ''} imported." if n else f"{first} Nothing was downloaded."
 
     def _current_page(self, context):
         pages = [p for p in context.pages if not p.is_closed()]
         return pages[-1] if pages else None
+
+    # Logging out
+    def _ask_to_log_out(self, fetched: bool = False) -> None:
+        self.logout_failed = True
+        self._set("open", ("Statement fetched and imported. " if fetched else "")
+                  + f"Couldn't find the Log out button on {BANKS[self.bank]['name']}. Log out in the browser window yourself "
+                    "(the app remembers where you clicked for next time), then click “Close anyway”.")
+
+    def _all_frames(self, context) -> list:
+        pages = [p for p in context.pages if not p.is_closed()]
+        return [f for p in reversed(pages) for f in p.frames]
+
+    @staticmethod
+    def _first_visible(loc, limit: int = 5):
+        try:
+            for i in range(min(loc.count(), limit)):
+                el = loc.nth(i)
+                if el.is_visible():
+                    return el
+        except Exception:
+            pass  # a frame that navigated away meanwhile
+        return None
+
+    def _find_logout(self, context):
+        hint = get_logout_hint(self.bank)
+        for frame in self._all_frames(context):
+            options = [frame.locator(c) for c in hint] + [
+                frame.get_by_role("link", name=_LOGOUT_RE), frame.get_by_role("button", name=_LOGOUT_RE),
+                frame.locator(_LOGOUT_ATTR_CSS), frame.get_by_text(_LOGOUT_RE),
+            ]
+            for loc in options:
+                el = self._first_visible(loc)
+                if el is not None:
+                    return el
+        return None
+
+    def _find_confirm(self, context):
+        """The "Yes" / "OK" / "Log out" button of an "Are you sure?" pop-up."""
+        for frame in self._all_frames(context):
+            box = frame.locator(_DIALOG_CSS)
+            for loc in (box.get_by_role("button", name=_CONFIRM_RE), box.get_by_role("link", name=_CONFIRM_RE)):
+                el = self._first_visible(loc)
+                if el is not None:
+                    return el
+        return None
+
+    def _password_visible(self, context) -> bool:
+        return any(self._first_visible(f.locator("input[type=password]")) is not None for f in self._all_frames(context))
+
+    def _says_logged_out(self, context) -> bool:
+        return any(self._first_visible(f.get_by_text(_LOGGED_OUT_RE)) is not None for f in self._all_frames(context))
+
+    def _logout(self, context) -> str:
+        """Log out of the bank. Returns confirmed | clicked | already | not_found (or closed: no window left)."""
+        if self._current_page(context) is None:
+            return "closed"
+        if self.logout in ("confirmed", "clicked", "already"):
+            return self.logout
+        self._set(message="Logging out of the bank…", progress=None)
+        control = self._find_logout(context)
+        if control is None:
+            # A login page (never logged in, or you logged out yourself) has nothing to log out of.
+            outcome = "already" if self._says_logged_out(context) or self._password_visible(context) else "not_found"
+        else:
+            outcome = self._click_logout(context, control)
+        self.logout = outcome
+        log.info("Net banking %s (account %s): logout %s", self.bank, self.account["id"], outcome)
+        return outcome
+
+    def _click_logout(self, context, control) -> str:
+        pages = [p for p in context.pages if not p.is_closed()]
+
+        def accept(dialog):  # a browser confirm() box: "Do you want to log out?"
+            try:
+                dialog.accept()
+            except Exception:
+                pass
+
+        for p in pages:
+            p.on("dialog", accept)
+        password_before = self._password_visible(context)
+        try:
+            try:
+                control.click(timeout=5_000)
+            except Exception:
+                control.evaluate("el => el.click()")
+            confirmed_popup = False
+            deadline = time.time() + LOGOUT_TIMEOUT
+            while time.time() < deadline:
+                page = self._current_page(context)
+                if page is None:
+                    return "confirmed"  # the bank closed its own window
+                if self._says_logged_out(context) or (not password_before and self._password_visible(context)):
+                    return "confirmed"
+                if not confirmed_popup:
+                    button = self._find_confirm(context)
+                    if button is not None:
+                        try:
+                            button.click(timeout=3_000)
+                            confirmed_popup = True
+                        except Exception:
+                            pass
+                try:
+                    page.wait_for_timeout(400)
+                except Exception:
+                    pass
+            return "clicked"
+        except Exception as exc:
+            log.warning("Net banking %s: logout click failed: %s", self.bank, str(exc).splitlines()[0][:120])
+            return "not_found"
+        finally:
+            for p in pages:
+                try:
+                    p.remove_listener("dialog", accept)
+                except Exception:
+                    pass
 
     def _loop(self, context) -> None:
         while True:
@@ -484,17 +657,29 @@ class NetBankingSession:
             except queue.Empty:
                 name = None
             if name == "close":
-                fut.set_result(True)
+                outcome = self._logout(context)
+                if outcome == "not_found" and not kwargs.get("force"):
+                    self._ask_to_log_out()
+                    fut.set_result({"closed": False, "logout": outcome})
+                    continue
+                fut.set_result({"closed": True, "logout": outcome})
                 return
             if name:
                 self._last_activity = time.time()
                 try:
-                    fut.set_result(self._handle(name, kwargs, context, page))
+                    result = self._handle(name, kwargs, context, page)
+                    fut.set_result(result)
                 except Exception as exc:
                     fut.set_exception(exc)
+                    result = None
+                if name == "replay" and isinstance(result, dict) and result.get("ok"):
+                    # Fetched: log out and close, so the bank session doesn't stay open behind you.
+                    if self._logout(context) != "not_found":
+                        return
+                    self._ask_to_log_out(fetched=True)
             self._process_downloads()
             if time.time() - self._last_activity > IDLE_TIMEOUT:
-                self._set(message="Closed after 20 minutes without activity.")
+                self._logout(context)
                 return
             try:
                 page.wait_for_timeout(200)  # lets the browser deliver events (downloads, recorder)
@@ -668,7 +853,7 @@ class NetBankingSession:
             self._import(path, name)
 
     def _inbox_path(self, name: str) -> Path:
-        inbox = config.INBOX_DIR / "netbanking"
+        inbox = profiles.inbox_dir() / "netbanking"
         inbox.mkdir(parents=True, exist_ok=True)
         safe = re.sub(r"[^A-Za-z0-9._-]", "_", name)[:80]
         return inbox / f"{datetime.now():%Y%m%d-%H%M%S}_{safe}"
@@ -717,6 +902,8 @@ def start_session(account_id: int, headless: bool = False, channel: str | None =
     global _current
     with _manager_lock:
         if _current and _current.active:
+            if not _mine(_current):
+                raise ValueError("Someone else is using net banking on this computer right now. Try again in a few minutes.")
             raise ValueError("A net banking window is already open. Close it first.")
         account = next((a for a in service.list_accounts() if a["id"] == account_id), None)
         if not account:
@@ -730,16 +917,24 @@ def start_session(account_id: int, headless: bool = False, channel: str | None =
     return _current.snapshot()
 
 
+def _mine(session: NetBankingSession | None) -> bool:
+    """The browser window belongs to whoever opened it: nobody else sees or drives it."""
+    if session is None:
+        return False
+    me, owner = profiles.current(), session.profile_user
+    return (me.id if me else None) == (owner.id if owner else None)
+
+
 def current_session() -> NetBankingSession | None:
     return _current
 
 
 def session_status() -> dict | None:
-    return _current.snapshot() if _current else None
+    return _current.snapshot() if _mine(_current) else None
 
 
 def session_command(name: str, timeout: float = 300, **kwargs) -> dict:
-    if not _current or not _current.active:
+    if not _current or not _current.active or not _mine(_current):
         raise ValueError("No net banking window is open.")
     if name == "replay":
         start, end = kwargs.get("start"), kwargs.get("end")

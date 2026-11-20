@@ -1,8 +1,7 @@
 """Web API and MCP tools, end to end over the same service layer."""
 
 import pytest
-from fastapi.testclient import TestClient
-from helpers import MONTH1, MONTH2, hdfc_xlsx
+from helpers import MONTH1, MONTH2, hdfc_xlsx, signed_in_client
 
 
 @pytest.fixture
@@ -11,7 +10,7 @@ def client(monkeypatch, fake_llm):
 
     monkeypatch.setattr("tracker.categorizer.default_classifier", lambda *a, **k: fake_llm)
     monkeypatch.setattr(app_module.secrets, "get_pdf_password", lambda _id: None)
-    return TestClient(app_module.app)
+    return signed_in_client(app_module)
 
 
 def _upload(client, path, **form):

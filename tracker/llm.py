@@ -379,11 +379,22 @@ def api_key_set() -> bool:
     return bool(os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"))
 
 
+def subscription_allowed() -> bool:
+    """Your Claude subscription is for your own use: it categorizes the owner's data only, never anyone else's."""
+    from tracker import profiles
+
+    return profiles.is_owner_or_none()
+
+
+def _use_subscription(mode: str) -> bool:
+    return subscription_allowed() and (mode == "claude_code" or (mode == "auto" and bool(shutil.which("claude"))))
+
+
 def build_classifier(mode: str) -> Classifier | None:
     backends = []
     if mode == "api" or (mode == "auto" and api_key_set()):
         backends.append(_backend("api"))
-    if mode == "claude_code" or (mode == "auto" and shutil.which("claude")):
+    if _use_subscription(mode):
         backends.append(_backend("claude_code"))
     return ChainClassifier(backends) if backends else None
 
@@ -415,7 +426,7 @@ def structured_completion(system: str, user: str, schema: dict, model: str, mode
             return data, HaikuClassifier.label, errors
         log.warning("%s unavailable (%s)", HaikuClassifier.label, err)
         errors.append(f"{HaikuClassifier.label}: {err}")
-    if mode == "claude_code" or (mode == "auto" and shutil.which("claude")):
+    if _use_subscription(mode):
         data, err = _cli_json(system, user, schema, model, timeout)
         if data is not None:
             log.info("%s answered (%s) in %.1fs", ClaudeCodeClassifier.label, model, time.monotonic() - started)

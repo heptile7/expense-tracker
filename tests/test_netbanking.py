@@ -60,8 +60,19 @@ def _wait_imports(s, n, timeout=40):
 
 
 def _close(s):
-    s.command("close").result(20)
-    s._thread.join(20)
+    """Close the way the panel does: log out first; if that can't be done, close anyway."""
+    if s._thread.is_alive() and s.active:
+        try:
+            if not s.command("close").result(60)["closed"]:
+                s.command("close", force=True).result(20)
+        except TimeoutError:
+            pass  # it was already closing
+    s._thread.join(30)
+
+
+def _wait_closed(s, timeout=60):
+    s._thread.join(timeout)
+    return s.snapshot()
 
 
 def test_record_then_replay(bank, account):
@@ -92,6 +103,7 @@ def test_record_then_replay(bank, account):
         assert s.snapshot()["state"] == "open" and not s.recording  # recording stopped by itself on download
     finally:
         _close(s)
+    assert bank.logouts == 1 and s.logout == "confirmed"  # "Log out and close" ended the bank session first
 
     route = netbanking.get_route("HDFC")
     actions = [(st["action"], st.get("role") or st.get("label")) for st in route["steps"]]
@@ -122,6 +134,10 @@ def test_record_then_replay(bank, account):
         imports = _wait_imports(s, 1)
         assert imports[0]["ok"] and imports[0]["n_new"] == 2
         assert len(s.snapshot()["imports"]) == 1 and len(bank.downloads) == 2
+        # Once the statement is in, the app logs out and closes the browser by itself.
+        snap = _wait_closed(s)
+        assert snap["state"] == "closed" and bank.logouts == 2
+        assert snap["message"].startswith("Logged out of HDFC Bank NetBanking and closed the browser. 1 statement imported")
     finally:
         _close(s)
     dates = {t["txn_date"] for t in service.list_transactions(month="2026-11")["items"]}
@@ -147,6 +163,37 @@ def test_manual_download_without_recording_is_imported(bank, account):
     finally:
         _close(s)
     assert netbanking.get_route("HDFC") is None  # nothing recorded unless you ask
+
+
+def test_logging_out_yourself_is_remembered(bank, account):
+    s = _open(account, f"{bank.base}/login.html")
+    try:
+        s.call(_login).result(30)
+
+        def log_out(page):  # you click the power icon, then Yes
+            page.click("#ctl00_lnk31")
+            page.get_by_role("button", name="Yes").click()
+            page.wait_for_url("**/loggedout.html")
+
+        s.call(log_out).result(30)
+        assert netbanking.get_logout_hint("HDFC")  # where the Log out control is, for next time
+        assert s.command("close").result(30) == {"closed": True, "logout": "already"}
+        assert _wait_closed(s)["message"].startswith("You were logged out. Browser closed.")
+    finally:
+        _close(s)
+    assert bank.logouts == 1  # not logged out twice
+
+
+def test_no_logout_button_keeps_the_window_open(bank, account):
+    s = _open(account, f"{bank.base}/welcome.html")  # a page with no Log out control and no login form
+    try:
+        assert s.command("close").result(60) == {"closed": False, "logout": "not_found"}
+        snap = s.snapshot()
+        assert snap["state"] == "open" and snap["logout_failed"] and "Close anyway" in snap["message"]
+        assert s.command("close", force=True).result(30)["closed"]
+        assert "without logging out" in _wait_closed(s)["message"]
+    finally:
+        _close(s)
 
 
 def test_replay_reports_missing_step(bank, account):

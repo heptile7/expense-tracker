@@ -5,7 +5,8 @@ Mirrors what real banks do that broke naive recording:
   * auto-numbered field ids (bb_input_7...) that change on every visit, with <label>s;
   * a month dropdown ("November 2026") next to the date fields;
   * a read-only "To" date set by a calendar pop-up without a change event;
-  * the download started by a script-created <a> that the page clicks itself.
+  * the download started by a script-created <a> that the page clicks itself;
+  * logging out through an icon-only link (just a title), then an "Are you sure?" pop-up with Yes / No.
 """
 
 import threading
@@ -26,14 +27,20 @@ STATIC = {
   <button id="login" type="submit">Login</button>
 </form></body></html>""",
     "/home.html": """<!doctype html><html><body>
+<div id="hdr_17"><a id="ctl00_lnk31" href="#" title="Log Out" onclick="document.getElementById('pop_8812').style.display='block'; return false;">
+  <img src="/img/power.png" width="18" height="18" alt=""></a></div>
+<div id="pop_8812" class="modal-popup" style="display:none"><p>Are you sure you want to log out?</p>
+  <button onclick="this.parentNode.style.display='none'">No</button>
+  <button onclick="fetch('/logout').then(() => { location.href = '/loggedout.html'; })">Yes</button></div>
 <iframe name="left_menu" src="/menu.html" width="220" height="400"></iframe>
 <iframe name="main_part" src="/welcome.html" width="900" height="600"></iframe>
 </body></html>""",
     "/menu.html": """<!doctype html><html><body>
 <a href="/welcome.html" target="main_part">Home</a><br>
-<a href="/statement.html" target="main_part">Account Statement</a><br>
-<a href="/login.html" target="_top">Log out</a></body></html>""",
+<a href="/statement.html" target="main_part">Account Statement</a></body></html>""",
     "/welcome.html": "<!doctype html><html><body><p>Welcome back</p></body></html>",
+    "/loggedout.html": """<!doctype html><html><body><p>You have successfully logged out. Thank you for banking with us.</p>
+<a href="/login.html">Login again</a></body></html>""",
 }
 
 STATEMENT = """<!doctype html><html><body>
@@ -65,6 +72,7 @@ class FakeBank:
     def __init__(self):
         self.downloads: list[dict] = []
         self.statement_visits = 0
+        self.logouts = 0  # sessions ended on the bank's side
         self._tmp = TemporaryDirectory()
         bank = self
 
@@ -90,6 +98,9 @@ class FakeBank:
                     bank.statement_visits += 1
                     html = STATEMENT.replace("__A__", str(n)).replace("__B__", str(n + 1)).replace("__C__", str(n + 2))
                     self._send(html.encode(), "text/html; charset=utf-8")
+                elif url.path == "/logout":
+                    bank.logouts += 1
+                    self._send(b"{}", "application/json")
                 elif url.path == "/download":
                     q = dict(urllib.parse.parse_qsl(url.query))
                     bank.downloads.append(q)

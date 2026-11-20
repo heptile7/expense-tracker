@@ -20,7 +20,49 @@
     <button data-tab="categories">Categories</button>
     <button data-tab="settings">Settings</button>
   </nav>
+  <div class="who" id="who" hidden><span id="who-name"></span><button class="link" id="sign-out">Sign out</button></div>
 </header>
+
+<!-- Sign-in: shown instead of the app until someone signs in -->
+<section id="gate" class="gate" hidden>
+  <div class="gate-box">
+    <div class="gate-brand">Expenses</div>
+    <div id="gate-setup" hidden>
+      <h1>Set up sign-in</h1>
+      <p class="hint">Everything stays on this computer. Choose your name and a PIN of 4 to 8 digits. You'll use them here and on your phone. Your existing accounts and statements become yours.</p>
+      <form id="setup-form" class="gate-form">
+        <label>Your name <input id="setup-name" autocomplete="name" maxlength="40" required></label>
+        <label>PIN <input id="setup-pin" type="password" inputmode="numeric" autocomplete="new-password" maxlength="8" required></label>
+        <label>PIN again <input id="setup-pin2" type="password" inputmode="numeric" autocomplete="new-password" maxlength="8" required></label>
+        <button class="primary big">Set up</button>
+        <p class="gate-error" id="setup-error" role="alert"></p>
+      </form>
+    </div>
+    <div id="gate-remote" hidden>
+      <h1>Almost ready</h1>
+      <p>Sign-in hasn't been set up yet. Open the app on the computer it runs on and set it up there first, then come back here.</p>
+    </div>
+    <div id="gate-people" hidden>
+      <h1>Who's using Expenses?</h1>
+      <div id="people-list" class="people-list"></div>
+    </div>
+    <div id="gate-pin" hidden>
+      <button class="link" id="pin-back">← Not you?</button>
+      <h1 id="pin-title"></h1>
+      <form id="pin-form">
+        <input id="pin-input" class="pin-input" type="password" inputmode="numeric" autocomplete="current-password" maxlength="8" aria-label="PIN">
+        <div class="keypad" id="keypad">
+          <button type="button" data-k="1">1</button><button type="button" data-k="2">2</button><button type="button" data-k="3">3</button>
+          <button type="button" data-k="4">4</button><button type="button" data-k="5">5</button><button type="button" data-k="6">6</button>
+          <button type="button" data-k="7">7</button><button type="button" data-k="8">8</button><button type="button" data-k="9">9</button>
+          <button type="button" data-k="del" aria-label="Delete">⌫</button><button type="button" data-k="0">0</button>
+          <button type="submit" class="primary" aria-label="Sign in">→</button>
+        </div>
+      </form>
+      <p class="gate-error" id="pin-error" role="alert"></p>
+    </div>
+  </div>
+</section>
 
 <main>
   <!-- Dashboard -->
@@ -183,7 +225,7 @@
         </div>
         <div class="toolbar wrap">
           <button class="secondary" id="nb-record">Record my steps</button>
-          <button class="ghost" id="nb-close">Close browser</button>
+          <button class="ghost" id="nb-close">Log out and close</button>
         </div>
         <ol id="nb-steps" class="steps"></ol>
         <div id="nb-imports" class="results"></div>
@@ -270,6 +312,27 @@
 
   <!-- Settings -->
   <section id="tab-settings" class="tab">
+    <div class="card" id="people-card">
+      <h2>People</h2>
+      <div id="people-body"></div>
+      <div id="person-add" hidden>
+        <h3>Add a person</h3>
+        <form id="person-form" class="form-row wrap">
+          <input id="pf-name" placeholder="Name, e.g. Amma" maxlength="40" required aria-label="Name">
+          <input id="pf-pin" type="password" inputmode="numeric" maxlength="8" placeholder="Their PIN (4-8 digits)" autocomplete="new-password" required aria-label="Their PIN">
+          <button class="primary">Add person</button>
+        </form>
+      </div>
+      <h3>Your PIN</h3>
+      <form id="mypin-form" class="form-row wrap">
+        <input id="mp-current" type="password" inputmode="numeric" maxlength="8" placeholder="Current PIN" autocomplete="current-password" required aria-label="Current PIN">
+        <input id="mp-new" type="password" inputmode="numeric" maxlength="8" placeholder="New PIN" autocomplete="new-password" required aria-label="New PIN">
+        <button class="secondary">Change PIN</button>
+      </form>
+      <p class="hint">Each person has a separate space with their own accounts, statements, categories and plan. Nobody can see anyone else's.
+        Changing a PIN signs that person out on their other devices. Your Claude subscription only categorizes your own data;
+        other people's spaces use a Claude API key or the offline categorizer.</p>
+    </div>
     <div class="card">
       <h2>Accounts</h2>
       <div class="table-wrap">

@@ -698,6 +698,7 @@ def categorizer_settings(check_cli_login: bool = False) -> dict:
         "claude_cli": cli,
         "chain": chain + ["Offline categorizer"],
         "model": config.MODEL_ID,
+        "subscription_allowed": llm.subscription_allowed(),
     }
 
 
@@ -706,6 +707,9 @@ def set_categorizer_mode(mode: str) -> dict:
 
     if mode not in llm.MODES:
         raise ValueError(f"mode must be one of: {', '.join(llm.MODES)}")
+    if mode == "claude_code" and not llm.subscription_allowed():
+        raise ValueError("The Claude subscription on this computer belongs to its owner and can't be used for anyone else's "
+                         "data. Use a Claude API key, or the offline categorizer.")
     with db.session() as conn:
         db.set_setting(conn, "categorizer", mode)
     return categorizer_settings()

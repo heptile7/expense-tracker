@@ -40,7 +40,8 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 | `tracker/flow.py` | "Where the money went": money in/out over a period reconciled to the bank balance change (internal transfers and itemised card bills left out), one-offs, what's not explained yet, likely mix-ups. `/api/where`, MCP `where_money_went`. |
 | `tracker/advisor.py` | Money plan: totals-only snapshot → Claude (Opus) or offline rules; budgets. |
 | `tracker/service.py` | Shared operations for UI and MCP (categories, accounts, rules, budgets, corrections, summaries). |
-| `tracker/fetch/netbanking.py` | Assisted net banking: Playwright drives the user's Edge; recorder JS + replay. Recorded steps are stored per `route_profile`: the bank (`HDFC`) or its cards (`HDFC:card`). |
+| `tracker/profiles.py` | People and sign-in. Registry `data/profiles.db` (scrypt PIN hashes, lockout, session token hashes). Each person has a data folder (owner: `data/`, others: `data/profiles/<slug>/`). `profiles.use(p)` sets a ContextVar that `db.connect()`, inbox, Gmail token and keyring keys follow. `app.SignInMiddleware` activates the signed-in person per request; outside requests (tests, MCP) everything is the owner's. |
+| `tracker/fetch/netbanking.py` | Assisted net banking: Playwright drives the user's Edge; recorder JS + replay. Recorded steps are stored per `route_profile`: the bank (`HDFC`) or its cards (`HDFC:card`). Logs out before every close (`_logout`: learned hint → link/button named Log out → title/alt/id/href attributes → text; then the confirm pop-up; confirmed by "logged out" text or the login form). Logout clicks are never recorded as steps; the one you click yourself is remembered (`netbanking_logout:<bank>`). |
 | `tracker/fetch/gmail.py`, `secrets.py` | Gmail (read-only) statement fetch; PDF passwords in Windows Credential Manager via `keyring`. |
 | `tracker/logs.py` | Rotating logs in `data/logs/` (`app.log`, `mcp.log`). |
 | `static/app.js`, `templates/index.html` | Single-page UI, no build step, no framework. |
@@ -63,6 +64,7 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 - Dates are ISO `yyyy-mm-dd` strings in SQLite.
 - Plain `sqlite3` through `db.session()`, which commits on success. No ORM. Use parameterised SQL only.
 - Python 3.12, ruff (`ruff.toml`, 120 columns). Logging via `logging.getLogger(__name__)`, never `print` in library code.
+- API tests sign in first: `helpers.signed_in_client(app_module)` (local client, owner PIN `helpers.OWNER_PIN`). `tests/test_profiles.py` covers isolation between people.
 - New behaviour gets a test. Tests use synthetic data only: build statements with `tests/helpers.py`, fake Claude with `FakeClassifier`. A unit test never calls the real API or CLI (`conftest.py` patches `default_classifier`).
 - Card statement tests build files with `helpers.card_csv` or feed `parse_card_text` made-up text in both HDFC layouts (`tests/test_cards.py`).
 - Net banking tests run against `tests/fake_bank.py` in headless Edge. Keep the fake bank as awkward as real banks: auto-numbered ids, scripted downloads, calendar pop-ups.
@@ -80,6 +82,7 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 - **Categorization** sends Claude only: payee name, UPI ID with digits masked (`mask_upi_id`), channel, direction, and the narration with every number masked (`mask_for_llm`). Never amounts, balances, account or reference numbers.
 - **Money plan** sends totals only. A payee name is included only if `advisor.is_business()` says it's clearly a business; anyone else becomes "a person (category)". `tests/test_insights.py` checks this.
 - **Logs** (`data/logs/*.log`) record ids, counts, statuses and timings. Never amounts, narrations, payee or people's names, query strings, passwords or keys. `tests/test_logging.py` checks this; add a check when you add log lines.
+- **People**: every `/api` route except `/api/auth/*` needs a session, and runs only against that person's folder. Never read paths from `config.DATA_DIR`/`INBOX_DIR` in request code: use `profiles.data_dir()`/`inbox_dir()`. Background threads must capture `profiles.current()` and run inside `profiles.use(...)`. The Claude subscription (CLI route) is for the owner's data only (`llm.subscription_allowed()`). First-time set-up only from a direct local request.
 - **Net banking**: the user logs in themselves. Never record, store or fill login, password, OTP, PIN, card or phone fields. Never add anti-bot or captcha workarounds. MPIN / mobile-app access is out of scope.
 - **The user's real data** (`data/`, statements, the database): read it only when the task needs it. Prefer aggregates, and mask digits and names in anything printed. Real data never goes into `tests/`, commits or Claude prompts beyond the rules above.
 - Never commit `.env`, `data/`, `credentials.json`, `.claude/logs/` or `.claude/settings.local.json`.

@@ -39,6 +39,7 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 
 Open http://127.0.0.1:8765, then:
 
+1. **Set up sign-in:** the first time, the app asks for your name and a PIN (4 to 8 digits). Your existing data becomes yours.
 1. **Settings → Add an account** for each bank account. Enter the **last 4 digits**, so imports find the right account, and **your name as it appears on the account**, so transfers to yourself are recognised.
 2. **Import:** drop a statement in, or use **Fetch from net banking**.
 3. **Review:** confirm or fix anything the app was unsure about. Each fix teaches it.
@@ -77,6 +78,17 @@ Low-confidence results land in **Review**. Accepting one turns it into your own 
 
 In **Categories** you can rename categories, add sub-categories, merge categories, hide ones you don't use, and choose whether each is a **need**, a **want** or **savings**. That choice drives the 50/30/20 split.
 
+### Family members: a private space each
+
+Several people can use the app, each in a separate space with their own accounts, statements, categories, budgets and plan. Nobody can see anyone else's.
+
+- **Adding someone:** **Settings → People → Add a person** with their name and a PIN you agree on. Only the person who set up the app can add people.
+- **Signing in:** everyone signs in by tapping their name and typing their PIN, on this computer or on a phone (see Phase 5 in the plan: a private Tailscale link).
+- **Lockout:** five wrong PINs in a row lock that person out for 10 minutes. **Settings → People** lets you change your PIN, which signs you out on your other devices. The owner can reset anyone's PIN.
+- **Claude for other people's spaces:** your Claude subscription only categorizes your own data, because a personal plan can't be used to serve other people. Other people's spaces use a Claude API key (`.env`) if there is one, otherwise the offline categorizer.
+- **Net banking:** fetching opens a browser window on the computer running the app. Only the person who opened it sees its status.
+- **Gmail and PDF passwords** are kept per person too.
+
 ### Credit cards
 
 When you pay a credit card bill from your bank account, the app counts it as a transfer, not spending. Otherwise every purchase would be counted twice. What you bought with the card only shows up once you import the **card statement**:
@@ -103,6 +115,8 @@ Net banking keeps separate recorded steps for a bank's card statements, because 
 4. To automate the next time, click **Record my steps** after logging in, then go to the statement and download it.
 
    Next time: log in, choose a period ("since the last transaction", last 30 or 90 days, or custom dates), and click **Fetch statement**. The app repeats your clicks with the new dates.
+
+**Logging out.** Closing the window alone isn't enough: the bank keeps your session alive until it times out. So the app logs out first. After **Fetch statement** imports a statement, it clicks the bank's Log out button, answers the "Are you sure?" prompt, checks that the bank shows you as logged out, and closes the window. **Log out and close** does the same when you downloaded by hand, and so does the 20-minute idle timeout. If the app can't find the Log out button, the window stays open and the button changes to **Close anyway**. Log out yourself in that case; the app remembers where you clicked for next time.
 
 The recorder keeps only clicks, dropdown choices and date fields. It ignores login, password, OTP, PIN, card and phone fields, and clicks inside calendar pop-ups. It finds fields by their visible label, so it copes with pages whose internal IDs change, and month dropdowns follow the new period. If a bank changes its site, the app says which step failed. You can finish by hand (the download still imports) and record again.
 
@@ -164,12 +178,15 @@ Add this to `%APPDATA%\Claude\claude_desktop_config.json` and restart Claude Des
 - **Net banking:** you log in yourself. Nothing you type there is read or stored.
 - **PDF passwords** are kept in Windows Credential Manager, not in the database.
 - **Logs** (`data/logs/`) record what happened (requests, imports, errors), never amounts, narrations, names or search text.
+- **Sign-in:** PINs are stored only as salted scrypt hashes in `data/profiles.db`. Sessions are random tokens in an HttpOnly cookie, and only their SHA-256 is stored. Every data request needs a signed-in person and only ever touches that person's folder. First-time set-up only works on the computer itself, never through a relay.
 
 ## Files and folders
 
 | Path | Contents |
 |---|---|
 | `data/expenses.db` | Your database (SQLite). Back it up by copying the file. |
+| `data/profiles.db` | Who can sign in: names, PIN hashes, sessions |
+| `data/profiles/<name>/` | Everyone else's space: their own `expenses.db`, `inbox/` and Gmail sign-in |
 | `data/expenses-backup-*.db` | Automatic copies made before big upgrades |
 | `data/inbox/` | Statements fetched by net banking (`netbanking/`), Gmail (`gmail/`) or uploaded (`uploads/`) |
 | `data/logs/app.log`, `mcp.log` | Backend logs, rotated at 1 MB (5 kept) |

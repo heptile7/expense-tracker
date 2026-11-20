@@ -4,6 +4,21 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
+OWNER_PIN = "123456"
+
+
+def signed_in_client(app_module, **kwargs):
+    """A TestClient on this computer, signed in as the owner (setting sign-in up on first use)."""
+    from fastapi.testclient import TestClient
+
+    client = TestClient(app_module.app, client=("127.0.0.1", 50000), **kwargs)
+    if client.get("/api/auth/state").json()["setup_needed"]:
+        client.post("/api/auth/setup", json={"name": "Test User", "pin": OWNER_PIN}).raise_for_status()
+    else:
+        owner = client.get("/api/auth/state").json()["people"][0]
+        client.post("/api/auth/signin", json={"profile_id": owner["id"], "pin": OWNER_PIN}).raise_for_status()
+    return client
+
 HDFC_HEADER = ["Date", "Narration", "Chq./Ref.No.", "Value Dt", "Withdrawal Amt.", "Deposit Amt.", "Closing Balance"]
 
 

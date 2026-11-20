@@ -4,6 +4,7 @@ import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 import config
@@ -139,7 +140,9 @@ CREATE TABLE IF NOT EXISTS app_settings (
 );
 """
 
-_db_path: Path = config.DB_PATH
+_db_path: Path = config.DB_PATH  # the owner's database (and the only one without sign-in)
+# The signed-in person's database, for the current request or background thread (see profiles.py).
+_active_path: ContextVar[Path | None] = ContextVar("db_path", default=None)
 
 
 def set_db_path(path: str | Path) -> None:
@@ -148,13 +151,27 @@ def set_db_path(path: str | Path) -> None:
     _db_path = Path(path)
 
 
-def get_db_path() -> Path:
+def get_default_db_path() -> Path:
     return _db_path
 
 
+def get_db_path() -> Path:
+    return _active_path.get() or _db_path
+
+
+@contextmanager
+def use_path(path: Path | None) -> Iterator[None]:
+    token = _active_path.set(Path(path) if path else None)
+    try:
+        yield
+    finally:
+        _active_path.reset(token)
+
+
 def connect() -> sqlite3.Connection:
-    _db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(_db_path, timeout=30)
+    path = get_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")

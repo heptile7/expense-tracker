@@ -27,6 +27,9 @@ async function api(method, url, body, isForm = false) {
   const res = await fetch(url, opts);
   let data = null;
   try { data = await res.json(); } catch { /* empty body */ }
+  if (res.status === 401 && data?.signin) {
+    showGate().catch(() => {});  // signed out elsewhere, or the session expired
+  }
   if (!res.ok) {
     const detail = Array.isArray(data?.detail) ? data.detail.map((d) => d.msg).join("; ") : data?.detail;
     const err = new Error(data?.error || detail || res.statusText);
@@ -116,7 +119,7 @@ const LOADERS = {
   import: () => Promise.all([loadStatements(), loadNetbanking()]),
   rules: () => loadRules(),
   categories: () => loadCategories(),
-  settings: () => Promise.all([loadAccounts(), loadGmail(), loadUsage()]),
+  settings: () => Promise.all([loadPeople(), loadAccounts(), loadGmail(), loadUsage()]),
 };
 
 function showTab(name) {
@@ -848,6 +851,8 @@ function renderNbSession(s) {
   $("#nb-record").disabled = s.state === "replaying";
   $("#nb-record").textContent = s.recording ? "Stop recording" : (s.has_route ? "Record my steps again" : "Record my steps");
   $("#nb-close").hidden = !live;
+  $("#nb-close").textContent = s.logout_failed ? "Close anyway" : "Log out and close";
+  $("#nb-close").dataset.force = s.logout_failed ? "1" : "";
   $("#nb-open").disabled = live;
   $("#nb-steps").innerHTML = (s.recording ? s.recorded_steps : []).map((t) => `<li>${esc(t)}</li>`).join("");
   $("#nb-imports").innerHTML = (s.imports || []).map((i) => i.ok
@@ -972,6 +977,9 @@ async function loadGmail() {
 async function loadUsage() {
   const [s, u] = await Promise.all([api("GET", "/api/settings/categorizer?check=true"), api("GET", "/api/llm/usage")]);
   $("#cat-mode").value = s.mode;
+  const sub = $("#cat-mode option[value=claude_code]");
+  sub.disabled = !s.subscription_allowed;
+  sub.textContent = s.subscription_allowed ? "Claude via your subscription (Claude Code)" : "Claude subscription (only for the person who set up the app)";
   const cli = s.claude_cli || {};
   const cliText = !cli.installed ? "Claude Code CLI not found"
     : cli.logged_in ? `Claude Code CLI signed in (${esc(cli.auth_method === "claude.ai" ? "your Claude subscription" : cli.auth_method || "signed in")})`
@@ -1099,7 +1107,8 @@ function bind() {
     nbAction("replay", p);
   });
   $("#nb-record").addEventListener("click", () => nbAction($("#nb-record").textContent === "Stop recording" ? "record_stop" : "record_start"));
-  $("#nb-close").addEventListener("click", () => nbAction("close"));
+  // Logs out of the bank, then closes. If the app couldn't find Log out, the button becomes “Close anyway”.
+  $("#nb-close").addEventListener("click", () => nbAction("close", { force: $("#nb-close").dataset.force === "1" }));
 
   // Rules
   $$("#rules-source button").forEach((b) => b.addEventListener("click", () => {
@@ -1221,8 +1230,123 @@ function bind() {
   });
 }
 
+// ── Sign-in ──────────────────────────────────────────────────────────────────
+const gate = { person: null };
+
+async function showGate(auth) {
+  auth = auth || await api("GET", "/api/auth/state");
+  document.body.classList.add("signed-out");
+  $("#gate").hidden = false;
+  $("#who").hidden = true;
+  ["#gate-setup", "#gate-remote", "#gate-people", "#gate-pin"].forEach((s) => { $(s).hidden = true; });
+  if (auth.setup_needed) {
+    $(auth.can_setup ? "#gate-setup" : "#gate-remote").hidden = false;
+    if (auth.can_setup) $("#setup-name").focus();
+    return;
+  }
+  if (auth.people.length === 1) return askPin(auth.people[0]);
+  $("#people-list").innerHTML = auth.people.map((p) => `<button class="person" data-id="${p.id}"><span class="initial">${esc(p.name[0].toUpperCase())}</span>${esc(p.name)}</button>`).join("");
+  $$("#people-list .person").forEach((b) => b.addEventListener("click", () => askPin(auth.people.find((p) => String(p.id) === b.dataset.id))));
+  $("#gate-people").hidden = false;
+}
+
+function askPin(person) {
+  gate.person = person;
+  $("#gate-people").hidden = true;
+  $("#gate-pin").hidden = false;
+  $("#pin-back").hidden = document.querySelectorAll("#people-list .person").length < 2;
+  $("#pin-title").textContent = `Hello ${person.name}, enter your PIN`;
+  $("#pin-input").value = ""; $("#pin-error").textContent = "";
+  if (!matchMedia("(pointer: coarse)").matches) $("#pin-input").focus();  // phones use the keypad, no keyboard pop-up
+}
+
+async function signIn(e) {
+  e.preventDefault();
+  const pin = $("#pin-input").value;
+  if (!pin) return;
+  try {
+    await api("POST", "/api/auth/signin", { profile_id: gate.person.id, pin });
+    location.reload();
+  } catch (err) {
+    $("#pin-error").textContent = err.message;
+    $("#pin-input").value = "";
+  }
+}
+
+async function setUp(e) {
+  e.preventDefault();
+  const pin = $("#setup-pin").value;
+  if (pin !== $("#setup-pin2").value) { $("#setup-error").textContent = "The two PINs don't match."; return; }
+  try {
+    await api("POST", "/api/auth/setup", { name: $("#setup-name").value, pin });
+    location.reload();
+  } catch (err) { $("#setup-error").textContent = err.message; }
+}
+
+function bindGate() {
+  $("#pin-form").addEventListener("submit", signIn);
+  $("#setup-form").addEventListener("submit", setUp);
+  $("#pin-back").addEventListener("click", () => showGate().catch(fail));
+  $$("#keypad [data-k]").forEach((b) => b.addEventListener("click", () => {
+    const input = $("#pin-input");
+    input.value = b.dataset.k === "del" ? input.value.slice(0, -1) : (input.value + b.dataset.k).slice(0, 8);
+  }));
+  $("#sign-out").addEventListener("click", async () => {
+    await api("POST", "/api/auth/signout").catch(() => {});
+    location.reload();
+  });
+}
+
+// ── People (Settings) ────────────────────────────────────────────────────────
+async function loadPeople() {
+  const list = await api("GET", "/api/people");
+  const owner = !!state.me?.is_owner;
+  $("#person-add").hidden = !owner;
+  $("#people-body").innerHTML = `<table class="plain"><tbody>${list.map((p) => `<tr>
+      <td><b>${esc(p.name)}</b>${p.you ? ` <span class="pill">you</span>` : ""}${p.is_owner ? ` <span class="pill">set up the app</span>` : ""}</td>
+      <td class="num">${owner || p.you ? `<button class="link" data-rename="${p.id}">Rename</button>` : ""}
+        ${owner && !p.you ? ` · <button class="link" data-resetpin="${p.id}">Reset PIN</button>` : ""}</td></tr>`).join("")}</tbody></table>`;
+  $$("[data-rename]").forEach((b) => b.addEventListener("click", async () => {
+    const name = prompt("New name");
+    if (!name) return;
+    try { await api("PATCH", `/api/people/${b.dataset.rename}`, { name }); toast("Renamed"); loadPeople(); } catch (err) { fail(err); }
+  }));
+  $$("[data-resetpin]").forEach((b) => b.addEventListener("click", async () => {
+    const pin = prompt("New PIN for them (4 to 8 digits). It signs them out on their devices.");
+    if (!pin) return;
+    try { await api("PATCH", `/api/people/${b.dataset.resetpin}`, { pin }); toast("PIN changed"); } catch (err) { fail(err); }
+  }));
+}
+
+function bindPeople() {
+  $("#person-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      const p = await api("POST", "/api/people", { name: $("#pf-name").value, pin: $("#pf-pin").value });
+      e.target.reset();
+      toast(`Added ${p.name}. They sign in with their name and PIN.`);
+      loadPeople();
+    } catch (err) { fail(err); }
+  });
+  $("#mypin-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      await api("PATCH", `/api/people/${state.me.id}`, { current_pin: $("#mp-current").value, pin: $("#mp-new").value });
+      e.target.reset();
+      toast("PIN changed. Your other devices are signed out.");
+    } catch (err) { fail(err); }
+  });
+}
+
 (async function init() {
   bind();
+  bindGate();
+  bindPeople();
+  const auth = await api("GET", "/api/auth/state").catch(() => null);
+  if (!auth?.me) { await showGate(auth || undefined).catch(fail); return; }
+  state.me = auth.me;
+  $("#who-name").textContent = auth.me.name;
+  $("#who").hidden = false;
   try { await loadMeta(); } catch (err) { fail(err); }
   refreshBadge();
   showTab(currentTab());

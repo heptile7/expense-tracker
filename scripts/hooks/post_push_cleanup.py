@@ -63,9 +63,9 @@ def _data_dir() -> Path:
     return Path(os.getenv("EXPENSE_TRACKER_DATA", ROOT / "data"))
 
 
-def remove_upload_leftovers(data_dir: Path, min_age_s: int = 3600) -> int:
+def remove_upload_leftovers(data_dir: Path, min_age_s: int = 3600, db_path: Path | None = None) -> int:
     uploads = data_dir / "inbox" / "uploads"
-    db_path = Path(os.getenv("EXPENSE_TRACKER_DB", data_dir / "expenses.db"))
+    db_path = db_path or Path(os.getenv("EXPENSE_TRACKER_DB", data_dir / "expenses.db"))
     if not uploads.is_dir() or not db_path.exists():
         return 0
     with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
@@ -108,7 +108,10 @@ def main() -> None:
         return
     try:
         caches = remove_caches(ROOT)
-        uploads = remove_upload_leftovers(_data_dir())
+        data = _data_dir()
+        uploads = remove_upload_leftovers(data)
+        for person in sorted((data / "profiles").glob("*/")):  # everyone else's space (see tracker/profiles.py)
+            uploads += remove_upload_leftovers(person, db_path=person / "expenses.db")
         browsers = stop_test_browsers()
         summary = f"after push: removed {caches} cache folders, {uploads} upload leftovers, stopped {browsers} test browsers"
         _log(summary)

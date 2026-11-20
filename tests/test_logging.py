@@ -2,8 +2,7 @@
 
 import logging
 
-from fastapi.testclient import TestClient
-from helpers import MONTH1, hdfc_xlsx
+from helpers import MONTH1, hdfc_xlsx, signed_in_client
 
 from tracker import logs, service
 from tracker.importer import import_file
@@ -12,7 +11,7 @@ from tracker.importer import import_file
 def _client():
     import app as app_module
 
-    return TestClient(app_module.app, raise_server_exceptions=False), app_module
+    return signed_in_client(app_module, raise_server_exceptions=False), app_module
 
 
 def test_requests_logged_without_query_string(caplog):

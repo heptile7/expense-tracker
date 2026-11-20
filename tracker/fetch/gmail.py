@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 import config
-from tracker import db
+from tracker import db, profiles
 from tracker.fetch.secrets import get_pdf_password
 from tracker.importer import NeedsAccount, import_file
 from tracker.parsers import SUPPORTED, PasswordRequired, StatementError
@@ -29,12 +29,12 @@ def _load_credentials():
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
 
-    if not config.GMAIL_TOKEN.exists():
+    if not profiles.gmail_token_path().exists():
         return None
-    creds = Credentials.from_authorized_user_file(str(config.GMAIL_TOKEN), SCOPES)
+    creds = Credentials.from_authorized_user_file(str(profiles.gmail_token_path()), SCOPES)
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(Request())
-        config.GMAIL_TOKEN.write_text(creds.to_json())
+        profiles.gmail_token_path().write_text(creds.to_json())
     return creds if creds and creds.valid else None
 
 
@@ -58,13 +58,13 @@ def connect() -> dict:
         raise FileNotFoundError(f"Put your OAuth client file at {config.GMAIL_CREDENTIALS} first (see README).")
     flow = InstalledAppFlow.from_client_secrets_file(str(config.GMAIL_CREDENTIALS), SCOPES)
     creds = flow.run_local_server(port=0, open_browser=True)
-    config.GMAIL_TOKEN.parent.mkdir(parents=True, exist_ok=True)
-    config.GMAIL_TOKEN.write_text(creds.to_json())
+    profiles.gmail_token_path().parent.mkdir(parents=True, exist_ok=True)
+    profiles.gmail_token_path().write_text(creds.to_json())
     return status()
 
 
 def disconnect() -> None:
-    config.GMAIL_TOKEN.unlink(missing_ok=True)
+    profiles.gmail_token_path().unlink(missing_ok=True)
 
 
 def _service(creds):
@@ -111,7 +111,7 @@ def sync(account_id: int | None = None, max_messages: int = 50) -> dict:
     if not accounts:
         raise ValueError("No account has a Gmail search query yet. Add one under Settings > Accounts.")
 
-    inbox = config.INBOX_DIR / "gmail"
+    inbox = profiles.inbox_dir() / "gmail"
     inbox.mkdir(parents=True, exist_ok=True)
     report = []
     for acct in accounts:

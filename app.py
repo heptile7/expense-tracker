@@ -18,9 +18,10 @@ from fastapi import Body, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.requests import HTTPConnection
 
 import config
-from tracker import advisor, db, flow, insights, logs, service
+from tracker import advisor, db, flow, insights, logs, profiles, service
 from tracker.fetch import gmail, netbanking, secrets
 from tracker.importer import NeedsAccount
 from tracker.parsers import SUPPORTED, PasswordRequired, StatementError
@@ -30,10 +31,35 @@ log = logging.getLogger("app")
 access = logging.getLogger("app.requests")
 
 db.init_db()
-app = FastAPI(title="Expense Tracker", docs_url="/api/docs", redoc_url=None)
+profiles.init_all()
+app = FastAPI(title="Expense Tracker", docs_url="/api/docs", redoc_url=None, openapi_url="/api/openapi.json")
 app.mount("/static", StaticFiles(directory=config.BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=config.BASE_DIR / "templates")
 log.info("Started: database %s, log %s", db.get_db_path().name, LOG_FILE)
+
+
+class SignInMiddleware:
+    """Every /api call except sign-in itself needs a signed-in person, and runs against their data only.
+
+    The page and static files are open (they hold no data); the page shows the sign-in screen.
+    """
+
+    def __init__(self, asgi_app):
+        self.app = asgi_app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        person = profiles.from_session(HTTPConnection(scope).cookies.get(profiles.COOKIE))
+        path = scope["path"]
+        if person is None and path.startswith("/api/") and not path.startswith("/api/auth/"):
+            return await JSONResponse({"error": "Please sign in.", "signin": True}, status_code=401)(scope, receive, send)
+        scope.setdefault("state", {})["profile"] = person
+        with profiles.use(person):
+            await self.app(scope, receive, send)
+
+
+app.add_middleware(SignInMiddleware)  # added before the logging middleware, so it runs inside it and 401s are logged
 
 # Polled every couple of seconds while a net banking window is open: keep it out of the log.
 _QUIET_PATHS = {"/api/netbanking/session"}
@@ -90,6 +116,116 @@ def index(request: Request):
     static = config.BASE_DIR / "static"
     version = int(max((static / f).stat().st_mtime for f in ("app.js", "style.css")))
     return templates.TemplateResponse(request, "index.html", {"model": config.MODEL_ID, "v": version})
+
+
+# ── Sign-in and people ────────────────────────────────────────────────────────
+
+
+def _https(request: Request) -> bool:
+    return request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+
+
+def _direct_local(request: Request) -> bool:
+    """A request made on this computer itself, not relayed by a proxy (Tailscale serve, a tunnel...)."""
+    host = request.client.host if request.client else ""
+    relayed = any(h in request.headers for h in ("x-forwarded-for", "x-forwarded-host", "forwarded", "tailscale-user-login"))
+    return host in ("127.0.0.1", "::1", "localhost") and not relayed
+
+
+def _signed_in(person: profiles.Profile) -> JSONResponse:
+    response = JSONResponse({"me": person.public()})
+    return response
+
+
+def _with_session(response: JSONResponse, request: Request, person: profiles.Profile) -> JSONResponse:
+    response.set_cookie(profiles.COOKIE, profiles.start_session(person), max_age=profiles.SESSION_DAYS * 86400,
+                        httponly=True, samesite="lax", secure=_https(request), path="/")
+    return response
+
+
+def _me(request: Request) -> profiles.Profile:
+    return request.state.profile
+
+
+def _require_owner(request: Request) -> None:
+    if not _me(request).is_owner:
+        raise PermissionError("Only the person who set up the app can do this.")
+
+
+@app.exception_handler(PermissionError)
+async def _forbidden(_: Request, exc: PermissionError):
+    return JSONResponse({"error": str(exc)}, status_code=403)
+
+
+@app.get("/api/auth/state")
+def auth_state(request: Request):
+    me = _me(request)
+    return {
+        "setup_needed": profiles.setup_needed(),
+        "can_setup": _direct_local(request),
+        "me": me.public() if me else None,
+        "people": [{"id": p.id, "name": p.name} for p in profiles.list_profiles()],
+    }
+
+
+@app.post("/api/auth/setup")
+def auth_setup(request: Request, body: dict = Body(...)):
+    """First run: whoever sits at this computer names themselves and picks a PIN; the existing data becomes theirs."""
+    if not profiles.setup_needed():
+        raise ValueError("Sign-in is already set up.")
+    if not _direct_local(request):
+        raise PermissionError("Set up sign-in on the computer that runs the app first.")
+    person = profiles.create_owner(str(body.get("name") or ""), str(body.get("pin") or ""))
+    return _with_session(_signed_in(person), request, person)
+
+
+@app.post("/api/auth/signin")
+def auth_signin(request: Request, body: dict = Body(...)):
+    try:
+        person = profiles.check_pin(int(body.get("profile_id") or 0), str(body.get("pin") or ""))
+    except profiles.AuthError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+    return _with_session(_signed_in(person), request, person)
+
+
+@app.post("/api/auth/signout")
+def auth_signout(request: Request):
+    profiles.end_session(request.cookies.get(profiles.COOKIE))
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(profiles.COOKIE, path="/")
+    return response
+
+
+@app.get("/api/people")
+def people(request: Request):
+    me = _me(request)
+    everyone = profiles.list_profiles() if me.is_owner else [me]
+    return [{**p.public(), "you": p.id == me.id} for p in everyone]
+
+
+@app.post("/api/people")
+def add_person(request: Request, body: dict = Body(...)):
+    _require_owner(request)
+    person = profiles.create_profile(str(body.get("name") or ""), str(body.get("pin") or ""))
+    return {**person.public(), "you": False}
+
+
+@app.patch("/api/people/{profile_id}")
+def update_person(profile_id: int, request: Request, body: dict = Body(...)):
+    """You can change your own name, PIN and language; the owner can also rename someone or reset their PIN."""
+    me = _me(request)
+    if profile_id != me.id:
+        _require_owner(request)
+    elif body.get("pin") is not None:
+        try:
+            profiles.check_pin(me.id, str(body.get("current_pin") or ""))
+        except profiles.AuthError as exc:
+            return JSONResponse({"error": f"Current PIN: {exc}"}, status_code=400)
+    person = profiles.update_profile(profile_id, name=body.get("name"), pin=body.get("pin"), language=body.get("language"))
+    response = JSONResponse({**person.public(), "you": person.id == me.id})
+    if profile_id == me.id and body.get("pin") is not None:
+        _with_session(response, request, person)  # a new PIN signs out other devices, but keeps you signed in here
+    return response
 
 
 @app.get("/api/meta")
@@ -203,7 +339,7 @@ def import_statement(
     name = os.path.basename(file.filename or "statement")
     if os.path.splitext(name)[1].lower() not in SUPPORTED:
         return JSONResponse({"error": "Unsupported file type. Use .xls, .xlsx, .csv or .pdf"}, status_code=400)
-    upload_dir = config.INBOX_DIR / "uploads"
+    upload_dir = profiles.inbox_dir() / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
     path = upload_dir / f"{uuid.uuid4().hex[:8]}_{re.sub(r'[^A-Za-z0-9._-]', '_', name)}"
     path.write_bytes(file.file.read())
@@ -413,7 +549,9 @@ def netbanking_action(action: str, body: dict = Body(default={})):
         return netbanking.session_command("replay", start=body.get("start"), end=body.get("end"))
     if action == "record_stop":
         return netbanking.session_command("record_stop", save=bool(body.get("save", True)))
-    if action in ("record_start", "close"):
+    if action == "close":  # logs out of the bank first; force closes even if it couldn't
+        return netbanking.session_command("close", force=bool(body.get("force")))
+    if action == "record_start":
         return netbanking.session_command(action)
     raise service.NotFound(f"Unknown action {action}")
 

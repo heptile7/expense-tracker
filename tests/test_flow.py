@@ -4,7 +4,7 @@ from datetime import date
 
 import pytest
 from conftest import FakeClassifier
-from helpers import card_csv, hdfc_xlsx
+from helpers import card_csv, hdfc_xlsx, signed_in_client
 
 from tracker import flow, service
 from tracker.importer import import_file
@@ -117,11 +117,9 @@ def test_periods_with_partial_data_average_over_months_with_data(three_months):
 
 
 def test_where_endpoint_and_transaction_range(three_months):
-    from fastapi.testclient import TestClient
-
     import app as app_module
 
-    client = TestClient(app_module.app)
+    client = signed_in_client(app_module)
     w = client.get("/api/where", params={"period": "3m", "month": "2026-09"}).json()
     assert w["check"]["matches"]
     rent = next(r for r in w["rows"] if r["name"] == "Rent")
